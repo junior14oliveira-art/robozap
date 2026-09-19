@@ -2,13 +2,13 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { Zap, Mail, Lock, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
+import { Zap, Mail, Lock, ArrowRight, Loader2, AlertCircle, KeyRound } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 
 export default function LoginPage() {
   const { login } = useAuth();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState('admin');
+  const [password, setPassword] = useState('admin');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -42,6 +42,26 @@ export default function LoginPage() {
           </p>
         </div>
 
+        {/* Quick Access Info Banner */}
+        <div className="flex items-center justify-between rounded-xl border border-whatsapp/30 bg-whatsapp/10 px-4 py-3 text-xs text-whatsapp">
+          <div className="flex items-center gap-2">
+            <KeyRound className="h-4 w-4 shrink-0" />
+            <span>
+              Acesso rápido liberado: <strong>admin</strong> / <strong>admin</strong>
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setEmail('admin');
+              setPassword('admin');
+            }}
+            className="rounded-lg bg-whatsapp/20 px-2 py-1 font-semibold hover:bg-whatsapp/30 transition"
+          >
+            Preencher
+          </button>
+        </div>
+
         {/* Error Alert */}
         {error && (
           <div className="flex items-center gap-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3.5 text-sm text-red-400">
@@ -54,18 +74,18 @@ export default function LoginPage() {
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
             <label className="mb-2 block text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Email
+              Usuário ou Email
             </label>
             <div className="relative">
               <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-muted-foreground">
                 <Mail className="h-4 w-4" />
               </div>
               <input
-                type="email"
+                type="text"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="seuemail@exemplo.com"
+                placeholder="admin ou seuemail@exemplo.com"
                 className="w-full rounded-xl border border-border bg-secondary/50 py-2.5 pl-10 pr-4 text-sm text-foreground placeholder-muted-foreground outline-none transition focus:border-whatsapp focus:ring-1 focus:ring-whatsapp"
               />
             </div>

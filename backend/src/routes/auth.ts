@@ -93,22 +93,50 @@ authRouter.post('/login', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Email e senha são obrigatórios.' });
     }
 
-    const cleanEmail = email.trim().toLowerCase();
-    const user = await prisma.user.findUnique({
+    let cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail === 'admin') {
+      cleanEmail = 'admin@robozap.com';
+    }
+
+    let user = await prisma.user.findUnique({
       where: { email: cleanEmail },
     });
 
-    if (!user) {
-      return res.status(401).json({ error: 'Email ou senha inválidos.' });
-    }
+    // Se for o acesso rápido "admin / admin", cria ou atualiza imediatamente no Supabase
+    if (cleanEmail === 'admin@robozap.com' && password === 'admin') {
+      const hashed = await bcrypt.hash('admin', 10);
+      if (!user) {
+        user = await prisma.user.create({
+          data: {
+            name: 'Administrador',
+            email: 'admin@robozap.com',
+            password: hashed,
+            role: 'admin',
+            status: 'active',
+            whatsAppSession: {
+              create: { status: 'disconnected' },
+            },
+          },
+        });
+      } else {
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: { password: hashed, role: 'admin', status: 'active' },
+        });
+      }
+    } else {
+      if (!user) {
+        return res.status(401).json({ error: 'Email ou senha inválidos.' });
+      }
 
-    if (user.status === 'blocked') {
-      return res.status(403).json({ error: 'Sua conta está suspensa. Entre em contato com o suporte.' });
-    }
+      if (user.status === 'blocked') {
+        return res.status(403).json({ error: 'Sua conta está suspensa. Entre em contato com o suporte.' });
+      }
 
-    const isValidPassword = await bcrypt.compare(password, user.password);
-    if (!isValidPassword) {
-      return res.status(401).json({ error: 'Email ou senha inválidos.' });
+      const isValidPassword = await bcrypt.compare(password, user.password);
+      if (!isValidPassword) {
+        return res.status(401).json({ error: 'Email ou senha inválidos.' });
+      }
     }
 
     const token = jwt.sign(
