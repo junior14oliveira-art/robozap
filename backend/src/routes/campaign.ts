@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import path from 'path';
 import fs from 'fs';
@@ -11,16 +11,22 @@ import {
 import { processTemplate, randomizeImageBuffer } from '../services/campaignService';
 import { normalizePhone } from '../services/spreadsheetService';
 import { getWASocket, isWhatsAppConnected } from '../whatsapp/client';
+import { requireAuth, AuthRequest } from '../middleware/auth';
 
 const prisma = new PrismaClient();
 export const campaignRouter = Router();
 
+// Todas as rotas de campanhas exigem autenticação
+campaignRouter.use(requireAuth);
+
 /**
  * GET /api/campaigns
- * List all campaigns with summary
+ * List all campaigns with summary for logged-in user
  */
-campaignRouter.get('/', async (_req: Request, res: Response) => {
+campaignRouter.get('/', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
   const campaigns = await prisma.campaign.findMany({
+    where: { userId },
     orderBy: { createdAt: 'desc' },
     include: {
       _count: { select: { contacts: true } },
@@ -31,11 +37,12 @@ campaignRouter.get('/', async (_req: Request, res: Response) => {
 
 /**
  * GET /api/campaigns/:id
- * Get campaign details with contacts
+ * Get campaign details with contacts for logged-in user
  */
-campaignRouter.get('/:id', async (req: Request, res: Response) => {
-  const campaign = await prisma.campaign.findUnique({
-    where: { id: req.params.id },
+campaignRouter.get('/:id', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const campaign = await prisma.campaign.findFirst({
+    where: { id: req.params.id, userId },
     include: {
       contacts: { orderBy: { status: 'asc' }, take: 100 },
       logs: { orderBy: { createdAt: 'desc' }, take: 50 },
@@ -51,13 +58,14 @@ campaignRouter.get('/:id', async (req: Request, res: Response) => {
 
 /**
  * POST /api/campaigns/check-contacts
- * Analisa a lista antes do disparo:
+ * Analisa a lista antes do disparo para o usuário logado:
  * 1. Remove contatos com telefones duplicados na lista
- * 2. Salva e sincroniza os contatos globalmente no sistema (SavedContact)
+ * 2. Salva e sincroniza os contatos no perfil do usuário (SavedContact)
  * 3. Identifica contatos que já receberam mensagem em campanhas anteriores
  * 4. Identifica contatos na lista de Opt-Out (SAIR)
  */
-campaignRouter.post('/check-contacts', async (req: Request, res: Response) => {
+campaignRouter.post('/check-contacts', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
   const { contacts } = req.body;
   if (!Array.isArray(contacts) || contacts.length === 0) {
     return res.json({
@@ -90,12 +98,18 @@ campaignRouter.post('/check-contacts', async (req: Request, res: Response) => {
 
   const allPhones = Array.from(seen);
 
-  // Salva no banco global SavedContact para memória permanente do SaaS
+  // Salva no perfil do usuário (SavedContact) para memória permanente do SaaS
   await Promise.all(
     uniqueContacts.map((c) =>
       prisma.savedContact.upsert({
-        where: { phone: c.phone },
+        where: {
+          userId_phone: {
+            userId,
+            phone: c.phone,
+          },
+        },
         create: {
+          userId,
           phone: c.phone,
           name: c.name || null,
           company: c.company || null,
@@ -110,26 +124,27 @@ campaignRouter.post('/check-contacts', async (req: Request, res: Response) => {
     )
   );
 
-  // Consulta Opt-Out
+  // Consulta Opt-Out do usuário
   const optOuts = await prisma.optOutContact.findMany({
-    where: { phone: { in: allPhones } },
+    where: {
+      userId,
+      phone: { in: allPhones },
+    },
     select: { phone: true },
   });
   const optOutPhones = optOuts.map((o) => o.phone);
   const optOutSet = new Set(optOutPhones);
 
-  // Consulta quem já recebeu mensagem com sucesso anteriormente em qualquer campanha
-  const sentLogs = await prisma.messageLog.findMany({
-    where: { phone: { in: allPhones }, status: 'sent' },
-    select: { phone: true },
-  });
+  // Consulta quem já recebeu mensagem com sucesso anteriormente no perfil deste usuário
   const savedWithSent = await prisma.savedContact.findMany({
-    where: { phone: { in: allPhones }, totalSent: { gt: 0 } },
+    where: {
+      userId,
+      phone: { in: allPhones },
+      totalSent: { gt: 0 },
+    },
     select: { phone: true },
   });
-  const alreadyContactedPhones = Array.from(
-    new Set([...sentLogs.map((l) => l.phone), ...savedWithSent.map((s) => s.phone)])
-  );
+  const alreadyContactedPhones = savedWithSent.map((s) => s.phone);
   const alreadyContactedSet = new Set(alreadyContactedPhones);
 
   const newContactsCount = uniqueContacts.filter(
@@ -151,10 +166,10 @@ campaignRouter.post('/check-contacts', async (req: Request, res: Response) => {
 
 /**
  * POST /api/campaigns
- * Create and start a new campaign
- * Body: { name, contacts: [{phone, name, ...vars}], messageTemplate, delayMin, delayMax, allowResend }
+ * Create and start a new campaign for logged-in user
  */
-campaignRouter.post('/', async (req: Request, res: Response) => {
+campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
   const io = (req as any).io;
   const {
     name,
@@ -168,7 +183,7 @@ campaignRouter.post('/', async (req: Request, res: Response) => {
     batchPauseMin = 3,
     randomizeMedia = true,
     optOutFooter = true,
-    allowResend = false, // Regra anti-duplicação: por padrão NÃO reenvia para quem já recebeu
+    allowResend = false,
   } = req.body;
 
   if (!name || !contacts || !messageTemplate) {
@@ -179,7 +194,7 @@ campaignRouter.post('/', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'A lista de contatos está vazia.' });
   }
 
-  // 1. De-duplicação na lista enviada (evita mesmo telefone 2 vezes na campanha)
+  // 1. De-duplicação na lista enviada
   const seenPhones = new Set<string>();
   const deduplicatedContacts: any[] = [];
   for (const c of contacts) {
@@ -193,12 +208,18 @@ campaignRouter.post('/', async (req: Request, res: Response) => {
 
   const allPhones = Array.from(seenPhones);
 
-  // 2. Salva e sincroniza contatos globalmente no SavedContact
+  // 2. Salva e sincroniza contatos no perfil do usuário (SavedContact)
   await Promise.all(
     deduplicatedContacts.map((c) =>
       prisma.savedContact.upsert({
-        where: { phone: c.phone },
+        where: {
+          userId_phone: {
+            userId,
+            phone: c.phone,
+          },
+        },
         create: {
+          userId,
           phone: c.phone,
           name: c.name || null,
           company: c.company || null,
@@ -213,24 +234,25 @@ campaignRouter.post('/', async (req: Request, res: Response) => {
     )
   );
 
-  // 3. Consulta lista de Opt-Out para filtrar preventivamente
+  // 3. Consulta lista de Opt-Out do usuário para filtrar preventivamente
   const optOuts = await prisma.optOutContact.findMany({
-    where: { phone: { in: allPhones } },
+    where: {
+      userId,
+      phone: { in: allPhones },
+    },
     select: { phone: true },
   });
   const optOutSet = new Set(optOuts.map((o) => o.phone));
 
-  // 4. Se allowResend for falso, identifica quem já recebeu mensagem antes para NÃO mandar 2 vezes
+  // 4. Se allowResend for falso, identifica quem já recebeu mensagem antes
   const alreadySentSet = new Set<string>();
   if (!allowResend) {
-    const sentLogs = await prisma.messageLog.findMany({
-      where: { phone: { in: allPhones }, status: 'sent' },
-      select: { phone: true },
-    });
-    sentLogs.forEach((l) => alreadySentSet.add(l.phone));
-
     const savedWithSent = await prisma.savedContact.findMany({
-      where: { phone: { in: allPhones }, totalSent: { gt: 0 } },
+      where: {
+        userId,
+        phone: { in: allPhones },
+        totalSent: { gt: 0 },
+      },
       select: { phone: true },
     });
     savedWithSent.forEach((s) => alreadySentSet.add(s.phone));
@@ -239,6 +261,7 @@ campaignRouter.post('/', async (req: Request, res: Response) => {
   // Create campaign
   const campaign = await prisma.campaign.create({
     data: {
+      userId,
       name,
       messageTemplate,
       mediaUrl: mediaUrl || null,
@@ -290,7 +313,7 @@ campaignRouter.post('/', async (req: Request, res: Response) => {
   const skippedCount = createdContacts.filter((c) => c.status === 'skipped').length;
   const optedOutCount = createdContacts.filter((c) => c.status === 'opted_out').length;
 
-  // Build personalized messages for each contact (com Spintax, variáveis e Opt-Out footer)
+  // Build personalized messages
   const jobContacts = activeContacts.map((contact) => {
     const rawContact = deduplicatedContacts.find((c: any) => c.phone === contact.phone) || {};
     return {
@@ -306,6 +329,7 @@ campaignRouter.post('/', async (req: Request, res: Response) => {
   // Enqueue messages
   if (jobContacts.length > 0) {
     await enqueueCampaign({
+      userId,
       campaignId: campaign.id,
       contacts: jobContacts,
       delayMin,
@@ -314,7 +338,6 @@ campaignRouter.post('/', async (req: Request, res: Response) => {
       batchPauseMin,
     });
   } else {
-    // Se todos foram ignorados por já terem sido contatados
     await prisma.campaign.update({
       where: { id: campaign.id },
       data: { status: 'completed', completedAt: new Date() },
@@ -322,7 +345,7 @@ campaignRouter.post('/', async (req: Request, res: Response) => {
   }
 
   // Emit real-time event
-  io.emit('campaign:created', {
+  io.to(`user:${userId}`).emit('campaign:created', {
     campaignId: campaign.id,
     name,
     total: deduplicatedContacts.length,
@@ -347,9 +370,13 @@ campaignRouter.post('/', async (req: Request, res: Response) => {
 /**
  * POST /api/campaigns/:id/pause
  */
-campaignRouter.post('/:id/pause', async (req: Request, res: Response) => {
+campaignRouter.post('/:id/pause', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
   const io = (req as any).io;
   const { id } = req.params;
+
+  const campaign = await prisma.campaign.findFirst({ where: { id, userId } });
+  if (!campaign) return res.status(404).json({ error: 'Campanha não encontrada.' });
 
   await pauseCampaignJobs(id);
   await prisma.campaign.update({ where: { id }, data: { status: 'paused' } });
@@ -361,9 +388,13 @@ campaignRouter.post('/:id/pause', async (req: Request, res: Response) => {
 /**
  * POST /api/campaigns/:id/resume
  */
-campaignRouter.post('/:id/resume', async (req: Request, res: Response) => {
+campaignRouter.post('/:id/resume', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
   const io = (req as any).io;
   const { id } = req.params;
+
+  const campaign = await prisma.campaign.findFirst({ where: { id, userId } });
+  if (!campaign) return res.status(404).json({ error: 'Campanha não encontrada.' });
 
   await resumeCampaignJobs(id);
   await prisma.campaign.update({ where: { id }, data: { status: 'running' } });
@@ -375,9 +406,13 @@ campaignRouter.post('/:id/resume', async (req: Request, res: Response) => {
 /**
  * POST /api/campaigns/:id/cancel
  */
-campaignRouter.post('/:id/cancel', async (req: Request, res: Response) => {
+campaignRouter.post('/:id/cancel', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
   const io = (req as any).io;
   const { id } = req.params;
+
+  const campaign = await prisma.campaign.findFirst({ where: { id, userId } });
+  if (!campaign) return res.status(404).json({ error: 'Campanha não encontrada.' });
 
   await cancelCampaignJobs(id);
   await prisma.campaign.update({ where: { id }, data: { status: 'cancelled' } });
@@ -389,7 +424,11 @@ campaignRouter.post('/:id/cancel', async (req: Request, res: Response) => {
 /**
  * DELETE /api/campaigns/:id
  */
-campaignRouter.delete('/:id', async (req: Request, res: Response) => {
+campaignRouter.delete('/:id', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const campaign = await prisma.campaign.findFirst({ where: { id: req.params.id, userId } });
+  if (!campaign) return res.status(404).json({ error: 'Campanha não encontrada.' });
+
   await cancelCampaignJobs(req.params.id);
   await prisma.campaign.delete({ where: { id: req.params.id } });
   res.json({ message: 'Campanha excluída.' });
@@ -399,15 +438,18 @@ campaignRouter.delete('/:id', async (req: Request, res: Response) => {
  * POST /api/campaigns/test-send
  * Dispara uma mensagem de teste individual e imediata para o WhatsApp do usuário
  */
-campaignRouter.post('/test-send', async (req: Request, res: Response) => {
+campaignRouter.post('/test-send', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
   const { phone, message, mediaUrl, randomizeMedia = true } = req.body;
 
   if (!phone || !message) {
     return res.status(400).json({ error: 'Telefone e mensagem são obrigatórios para o teste.' });
   }
 
-  if (!isWhatsAppConnected()) {
-    return res.status(503).json({ error: 'WhatsApp não está conectado. Conecte seu aparelho via QR Code antes de testar.' });
+  if (!isWhatsAppConnected(userId)) {
+    return res.status(503).json({
+      error: 'WhatsApp não está conectado. Conecte seu aparelho via QR Code antes de testar.',
+    });
   }
 
   const normalized = normalizePhone(phone);
@@ -415,7 +457,7 @@ campaignRouter.post('/test-send', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Número de telefone inválido para o teste.' });
   }
 
-  const sock = getWASocket();
+  const sock = getWASocket(userId);
   if (!sock) {
     return res.status(503).json({ error: 'Sessão do WhatsApp indisponível no momento.' });
   }
@@ -473,4 +515,3 @@ campaignRouter.post('/test-send', async (req: Request, res: Response) => {
     return res.status(500).json({ error: `Erro no envio do teste: ${err.message}` });
   }
 });
-

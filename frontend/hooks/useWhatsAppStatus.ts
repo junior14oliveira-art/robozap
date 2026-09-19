@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { getSocket } from '@/lib/socket';
-import { API_URL } from '@/lib/api';
+import { API_URL, getAuthToken } from '@/lib/api';
 
 export interface WhatsAppStatus {
   status: 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
@@ -19,9 +19,18 @@ export function useWhatsAppStatus() {
   const [qrCode, setQrCode] = useState<string | null>(null);
 
   const fetchStatus = useCallback(async () => {
+    const token = getAuthToken();
+    if (!token) {
+      setWaStatus({ status: 'disconnected', message: 'Faça login para conectar o WhatsApp' });
+      return;
+    }
+
     try {
       const res = await fetch(`${API_URL}/api/whatsapp/status`, {
         cache: 'no-store',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
       });
       if (!res.ok) return;
       const data = await res.json();
@@ -51,13 +60,11 @@ export function useWhatsAppStatus() {
   }, []);
 
   useEffect(() => {
-    // 1. Busca inicial imediata
     fetchStatus();
 
-    // 2. Sincronização periódica a cada 3.5 segundos (garantia de 100% sincronia)
+    // Sincronização periódica a cada 3.5 segundos
     const interval = setInterval(fetchStatus, 3500);
 
-    // 3. Atualizações em tempo real via Socket.io
     const socket = getSocket();
 
     const onStatus = (data: WhatsAppStatus) => {

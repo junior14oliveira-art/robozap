@@ -41,6 +41,7 @@ redisConnection
 export const MESSAGE_QUEUE_NAME = 'message-dispatch';
 
 export interface MessageJobData {
+  userId: string;
   campaignId: string;
   contactId: string;
   phone: string;
@@ -59,6 +60,7 @@ export interface MessageJobData {
 // eliminando dependência de Docker ou Redis >= 5 no Windows local.
 interface CampaignRunner {
   campaignId: string;
+  userId: string;
   paused: boolean;
   cancelled: boolean;
   queue: MessageJobData[];
@@ -78,7 +80,7 @@ function randomBetween(min: number, max: number): number {
 async function startCampaignRunner(runner: CampaignRunner): Promise<void> {
   while (runner.queue.length > 0) {
     if (runner.cancelled) {
-      logger.info({ campaignId: runner.campaignId }, '🚫 Runner da campanha cancelado.');
+      logger.info({ campaignId: runner.campaignId, userId: runner.userId }, '🚫 Runner da campanha cancelado.');
       activeRunners.delete(runner.campaignId);
       return;
     }
@@ -110,12 +112,15 @@ async function startCampaignRunner(runner: CampaignRunner): Promise<void> {
     try {
       await executeMessageJob(jobData);
     } catch (err: any) {
-      logger.error({ campaignId: runner.campaignId, err: err.message }, 'Erro ao disparar mensagem no runner');
+      logger.error(
+        { campaignId: runner.campaignId, userId: runner.userId, err: err.message },
+        'Erro ao disparar mensagem no runner'
+      );
     }
   }
 
   activeRunners.delete(runner.campaignId);
-  logger.info({ campaignId: runner.campaignId }, '🏁 Runner da campanha finalizado.');
+  logger.info({ campaignId: runner.campaignId, userId: runner.userId }, '🏁 Runner da campanha finalizado.');
 }
 
 /**
@@ -123,6 +128,7 @@ async function startCampaignRunner(runner: CampaignRunner): Promise<void> {
  * e intervalos de resfriamento de lote (Batch Cooling).
  */
 export async function enqueueCampaign(params: {
+  userId: string;
   campaignId: string;
   contacts: Array<{
     id: string;
@@ -137,7 +143,7 @@ export async function enqueueCampaign(params: {
   batchSize?: number;
   batchPauseMin?: number;
 }): Promise<void> {
-  const { campaignId, contacts, delayMin, delayMax, batchSize = 20, batchPauseMin = 3 } = params;
+  const { userId, campaignId, contacts, delayMin, delayMax, batchSize = 20, batchPauseMin = 3 } = params;
   const totalContacts = contacts.length;
 
   const queueItems: MessageJobData[] = [];
@@ -156,7 +162,7 @@ export async function enqueueCampaign(params: {
         jobDelay = cooldownMs + randomDelayMs;
         isBatchCooldown = true;
         logger.info(
-          { campaignId, contactIndex: index, cooldownMinutes: batchPauseMin },
+          { campaignId, userId, contactIndex: index, cooldownMinutes: batchPauseMin },
           '🧊 Aplicando resfriamento de lote (Batch Cooling) anti-ban'
         );
       } else {
@@ -165,6 +171,7 @@ export async function enqueueCampaign(params: {
     }
 
     queueItems.push({
+      userId,
       campaignId,
       contactId: contact.id,
       phone: contact.phone,
@@ -181,6 +188,7 @@ export async function enqueueCampaign(params: {
 
   const runner: CampaignRunner = {
     campaignId,
+    userId,
     paused: false,
     cancelled: false,
     queue: queueItems,
@@ -192,6 +200,7 @@ export async function enqueueCampaign(params: {
   logger.info(
     {
       campaignId,
+      userId,
       total: totalContacts,
       hasMedia: contacts.some((c) => !!c.mediaUrl),
     },
@@ -200,7 +209,7 @@ export async function enqueueCampaign(params: {
 
   // Inicia o processamento assíncrono em background
   startCampaignRunner(runner).catch((err) => {
-    logger.error({ campaignId, err }, 'Erro inesperado no runner da campanha');
+    logger.error({ campaignId, userId, err }, 'Erro inesperado no runner da campanha');
   });
 }
 

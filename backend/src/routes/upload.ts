@@ -3,6 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { parseSpreadsheet } from '../services/spreadsheetService';
+import { requireAuth } from '../middleware/auth';
 
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './uploads');
 const MEDIA_DIR = path.join(UPLOAD_DIR, 'media');
@@ -63,6 +64,8 @@ const uploadMedia = multer({
 });
 
 export const uploadRouter = Router();
+
+uploadRouter.use(requireAuth);
 
 /**
  * POST /api/upload/spreadsheet

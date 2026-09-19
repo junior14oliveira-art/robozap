@@ -3,14 +3,19 @@
 import { useWhatsAppStatus } from '@/hooks/useWhatsAppStatus';
 import { AlertTriangle, WifiOff, X } from 'lucide-react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 
 export function WhatsAppStatusBanner() {
+  const pathname = usePathname();
   const { waStatus } = useWhatsAppStatus();
   const [dismissed, setDismissed] = useState(false);
 
-  // Only show banner when disconnected (not on first load)
+  // Não exibe o banner nas telas de autenticação
+  if (pathname === '/login' || pathname === '/register') return null;
+
+  // Only show banner when disconnected
   if (waStatus.status === 'connected' || dismissed) return null;
   if (waStatus.status === 'disconnected' && waStatus.message === 'Carregando status...') return null;
 

@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import {
   isWhatsAppConnected,
@@ -7,19 +7,24 @@ import {
   getCurrentQrCode,
   getWASocket,
 } from '../whatsapp/client';
+import { requireAuth, AuthRequest } from '../middleware/auth';
 
 const prisma = new PrismaClient();
 export const whatsappRouter = Router();
 
+// Todas as rotas de WhatsApp exigem autenticação do usuário
+whatsappRouter.use(requireAuth);
+
 /**
  * GET /api/whatsapp/status
- * Returns current WhatsApp connection status and current QR code if available
+ * Retorna o status da conexão do WhatsApp do usuário logado
  */
-whatsappRouter.get('/status', async (_req: Request, res: Response) => {
-  const session = await prisma.whatsAppSession.findUnique({ where: { id: 'default' } });
-  const connected = isWhatsAppConnected();
-  const sock = getWASocket();
-  const qr = connected ? null : getCurrentQrCode();
+whatsappRouter.get('/status', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
+  const session = await prisma.whatsAppSession.findUnique({ where: { userId } });
+  const connected = isWhatsAppConnected(userId);
+  const sock = getWASocket(userId);
+  const qr = connected ? null : getCurrentQrCode(userId);
 
   let status = 'disconnected';
   if (connected) {
@@ -44,20 +49,22 @@ whatsappRouter.get('/status', async (_req: Request, res: Response) => {
 
 /**
  * POST /api/whatsapp/connect
- * Trigger a new WhatsApp connection (generates a new QR Code)
+ * Inicia conexão do WhatsApp para o usuário logado (gera novo QR code)
  */
-whatsappRouter.post('/connect', async (req: Request, res: Response) => {
+whatsappRouter.post('/connect', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
   const io = (req as any).io;
-  await initWhatsAppClient(io, true);
+  await initWhatsAppClient(io, userId, true);
   res.json({ message: 'Conectando ao WhatsApp... Aguarde o QR Code.' });
 });
 
 /**
  * POST /api/whatsapp/logout
- * Disconnect and clear WhatsApp session
+ * Desconecta e limpa sessão do WhatsApp do usuário logado
  */
-whatsappRouter.post('/logout', async (req: Request, res: Response) => {
+whatsappRouter.post('/logout', async (req: AuthRequest, res: Response) => {
+  const userId = req.user!.id;
   const io = (req as any).io;
-  await logoutWhatsApp(io);
-  res.json({ message: 'Logged out successfully.' });
+  await logoutWhatsApp(io, userId);
+  res.json({ message: 'WhatsApp desconectado com sucesso.' });
 });

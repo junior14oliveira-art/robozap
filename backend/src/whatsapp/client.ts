@@ -17,37 +17,74 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-// Singleton socket instance
-let waSocket: WASocket | null = null;
-let isConnecting = false;
-let currentQrCode: string | null = null;
-let reconnectTimeout: NodeJS.Timeout | null = null;
-
-const SESSION_DIR = path.resolve(
-  process.env.SESSION_DIR || './sessions',
-  'default'
-);
-
-export function getWASocket(): WASocket | null {
-  return waSocket;
+interface UserSessionState {
+  socket: WASocket | null;
+  isConnecting: boolean;
+  currentQrCode: string | null;
+  reconnectTimeout: NodeJS.Timeout | null;
 }
 
-export function isWhatsAppConnected(): boolean {
-  return waSocket !== null && (waSocket as any).user !== undefined;
+// Multi-tenant socket map por userId
+const userSessions = new Map<string, UserSessionState>();
+
+function getSession(userId: string): UserSessionState {
+  let state = userSessions.get(userId);
+  if (!state) {
+    state = {
+      socket: null,
+      isConnecting: false,
+      currentQrCode: null,
+      reconnectTimeout: null,
+    };
+    userSessions.set(userId, state);
+  }
+  return state;
 }
 
-export function getCurrentQrCode(): string | null {
-  return currentQrCode;
+const BASE_SESSION_DIR = path.resolve(process.env.SESSION_DIR || './sessions');
+
+function getUserSessionDir(userId: string): string {
+  // Limpa caracteres especiais do userId para o sistema de arquivos
+  const safeId = userId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(BASE_SESSION_DIR, safeId);
+}
+
+export function getWASocket(userId: string = 'default'): WASocket | null {
+  return userSessions.get(userId)?.socket || null;
+}
+
+export function isWhatsAppConnected(userId: string = 'default'): boolean {
+  const sock = userSessions.get(userId)?.socket;
+  return sock !== null && sock !== undefined && (sock as any).user !== undefined;
+}
+
+export function getCurrentQrCode(userId: string = 'default'): string | null {
+  return userSessions.get(userId)?.currentQrCode || null;
 }
 
 /**
- * Initialize the WhatsApp Baileys client.
- * Handles QR Code generation, session persistence, and reconnection logic.
+ * Emite eventos tanto para a sala do usuário quanto para o broadcast com sufixo do userId
  */
-export async function initWhatsAppClient(io: SocketIOServer, force = false): Promise<void> {
-  if (isWhatsAppConnected()) {
-    const phone = waSocket?.user?.id?.split(':')[0] || 'unknown';
-    io.emit('whatsapp:status', {
+function emitToUser(io: SocketIOServer, userId: string, event: string, payload: any) {
+  io.to(`user:${userId}`).emit(event, { ...payload, userId });
+  io.emit(`${event}:${userId}`, { ...payload, userId });
+  // Broadcast geral com userId anexado
+  io.emit(event, { ...payload, userId });
+}
+
+/**
+ * Inicializa a instância Baileys de um usuário específico
+ */
+export async function initWhatsAppClient(
+  io: SocketIOServer,
+  userId: string = 'default',
+  force = false
+): Promise<void> {
+  const session = getSession(userId);
+
+  if (isWhatsAppConnected(userId)) {
+    const phone = session.socket?.user?.id?.split(':')[0] || 'unknown';
+    emitToUser(io, userId, 'whatsapp:status', {
       status: 'connected',
       phone,
       message: `Conectado como ${phone}`,
@@ -55,49 +92,51 @@ export async function initWhatsAppClient(io: SocketIOServer, force = false): Pro
     return;
   }
 
-  if (isConnecting && !force) {
-    logger.warn('WhatsApp client already initializing...');
-    if (currentQrCode) {
-      io.emit('whatsapp:qr', { qr: currentQrCode });
-      io.emit('whatsapp:status', { status: 'qr_ready', message: 'Escaneie o QR Code para conectar' });
+  if (session.isConnecting && !force) {
+    logger.warn({ userId }, 'WhatsApp client already initializing for user...');
+    if (session.currentQrCode) {
+      emitToUser(io, userId, 'whatsapp:qr', { qr: session.currentQrCode });
+      emitToUser(io, userId, 'whatsapp:status', {
+        status: 'qr_ready',
+        message: 'Escaneie o QR Code para conectar',
+      });
     }
     return;
   }
 
-  if (force && waSocket) {
+  if (force && session.socket) {
     try {
-      waSocket.end(undefined);
+      session.socket.end(undefined);
     } catch (_) {}
-    waSocket = null;
-    currentQrCode = null;
+    session.socket = null;
+    session.currentQrCode = null;
   }
 
-  isConnecting = true;
+  session.isConnecting = true;
 
-  if (reconnectTimeout) {
-    clearTimeout(reconnectTimeout);
-    reconnectTimeout = null;
+  if (session.reconnectTimeout) {
+    clearTimeout(session.reconnectTimeout);
+    session.reconnectTimeout = null;
   }
 
-  // Ensure session directory exists
-  if (!fs.existsSync(SESSION_DIR)) {
-    fs.mkdirSync(SESSION_DIR, { recursive: true });
+  const userDir = getUserSessionDir(userId);
+  if (!fs.existsSync(userDir)) {
+    fs.mkdirSync(userDir, { recursive: true });
   }
 
-  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
+  const { state, saveCreds } = await useMultiFileAuthState(userDir);
   const { version } = await fetchLatestBaileysVersion();
 
-  logger.info({ version }, '📱 Initializing Baileys WhatsApp client');
+  logger.info({ userId, version }, '📱 Initializing Baileys WhatsApp client for user');
 
   const sock = makeWASocket({
     version,
-    logger: logger.child({ module: 'baileys' }) as any,
+    logger: logger.child({ module: `baileys-${userId}` }) as any,
     auth: {
       creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: 'keys' }) as any),
+      keys: makeCacheableSignalKeyStore(state.keys, logger.child({ module: `keys-${userId}` }) as any),
     },
     generateHighQualityLinkPreview: false,
-    // Emula Windows Desktop oficial para evitar rejeição e banimento
     browser: Browsers.windows('Desktop'),
     markOnlineOnConnect: false,
     syncFullHistory: false,
@@ -107,7 +146,7 @@ export async function initWhatsAppClient(io: SocketIOServer, force = false): Pro
     getMessage: async () => undefined,
   });
 
-  waSocket = sock;
+  session.socket = sock;
 
   // ── Connection state updates ──────────────────────────────────────────────
   sock.ev.on('connection.update', async (update: Partial<ConnectionState>) => {
@@ -115,90 +154,99 @@ export async function initWhatsAppClient(io: SocketIOServer, force = false): Pro
 
     // QR Code generated
     if (qr) {
-      logger.info('📲 QR Code generated, scan it to connect WhatsApp');
+      logger.info({ userId }, '📲 QR Code generated, scan it to connect WhatsApp');
       try {
         const qrDataUrl = await QRCode.toDataURL(qr, { width: 300 });
-        currentQrCode = qrDataUrl;
-        io.emit('whatsapp:qr', { qr: qrDataUrl });
-        io.emit('whatsapp:status', { status: 'qr_ready', message: 'Escaneie o QR Code para conectar' });
+        session.currentQrCode = qrDataUrl;
+        emitToUser(io, userId, 'whatsapp:qr', { qr: qrDataUrl });
+        emitToUser(io, userId, 'whatsapp:status', {
+          status: 'qr_ready',
+          message: 'Escaneie o QR Code para conectar',
+        });
       } catch (err) {
-        logger.error({ err }, 'Failed to generate QR Code image');
+        logger.error({ err, userId }, 'Failed to generate QR Code image');
       }
 
-      // Update DB
-      await prisma.whatsAppSession.upsert({
-        where: { id: 'default' },
-        create: { id: 'default', status: 'qr_ready' },
-        update: { status: 'qr_ready' },
-      });
+      try {
+        await prisma.whatsAppSession.upsert({
+          where: { userId },
+          create: { userId, status: 'qr_ready' },
+          update: { status: 'qr_ready' },
+        });
+      } catch (_e) {}
     }
 
     if (connection === 'open') {
-      isConnecting = false;
-      currentQrCode = null;
+      session.isConnecting = false;
+      session.currentQrCode = null;
       const phone = sock.user?.id?.split(':')[0] || 'unknown';
-      logger.info({ phone }, '✅ WhatsApp connected successfully!');
+      logger.info({ userId, phone }, '✅ WhatsApp connected successfully for user!');
 
-      io.emit('whatsapp:status', {
+      emitToUser(io, userId, 'whatsapp:status', {
         status: 'connected',
         phone,
         message: `Conectado como ${phone}`,
       });
 
-      await prisma.whatsAppSession.upsert({
-        where: { id: 'default' },
-        create: { id: 'default', status: 'connected', phone },
-        update: { status: 'connected', phone },
-      });
+      try {
+        await prisma.whatsAppSession.upsert({
+          where: { userId },
+          create: { userId, status: 'connected', phone },
+          update: { status: 'connected', phone },
+        });
+      } catch (_e) {}
     }
 
     if (connection === 'close') {
-      isConnecting = false;
+      session.isConnecting = false;
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
 
-      logger.warn({ statusCode, isLoggedOut }, '⚠️ WhatsApp connection closed');
+      logger.warn({ userId, statusCode, isLoggedOut }, '⚠️ WhatsApp connection closed for user');
 
       if (isLoggedOut) {
-        logger.info('🗑️ Sessão encerrada pelo usuário/WhatsApp (Logout). Limpando sessão...');
-        waSocket = null;
-        currentQrCode = null;
-        clearSession();
+        logger.info({ userId }, '🗑️ Sessão encerrada pelo usuário/WhatsApp (Logout). Limpando sessão...');
+        session.socket = null;
+        session.currentQrCode = null;
+        clearUserSession(userId);
 
-        io.emit('whatsapp:status', {
+        emitToUser(io, userId, 'whatsapp:status', {
           status: 'disconnected',
           message: 'Sessão encerrada. Escaneie o QR Code novamente.',
           shouldReconnect: false,
         });
 
-        await prisma.whatsAppSession.upsert({
-          where: { id: 'default' },
-          create: { id: 'default', status: 'disconnected', phone: null },
-          update: { status: 'disconnected', phone: null },
-        });
+        try {
+          await prisma.whatsAppSession.upsert({
+            where: { userId },
+            create: { userId, status: 'disconnected', phone: null },
+            update: { status: 'disconnected', phone: null },
+          });
+        } catch (_e) {}
       } else {
-        // Reconexão automática necessária (ex: 515 restartRequired após escanear QR, 428, 408, 503)
         const delayMs = statusCode === DisconnectReason.restartRequired ? 1000 : 2500;
-        logger.info({ statusCode, delayMs }, `🔄 Reconectando WhatsApp em ${delayMs}ms...`);
+        logger.info({ userId, statusCode, delayMs }, `🔄 Reconectando WhatsApp do usuário em ${delayMs}ms...`);
 
-        // Não apaga o telefone do banco nem joga a UI para desconectado!
-        io.emit('whatsapp:status', {
+        emitToUser(io, userId, 'whatsapp:status', {
           status: 'connecting',
-          message: statusCode === DisconnectReason.restartRequired
-            ? 'Autenticando sessão com o WhatsApp...'
-            : 'Reconectando ao WhatsApp...',
+          message:
+            statusCode === DisconnectReason.restartRequired
+              ? 'Autenticando sessão com o WhatsApp...'
+              : 'Reconectando ao WhatsApp...',
           shouldReconnect: true,
         });
 
-        await prisma.whatsAppSession.upsert({
-          where: { id: 'default' },
-          create: { id: 'default', status: 'connecting' },
-          update: { status: 'connecting' },
-        });
+        try {
+          await prisma.whatsAppSession.upsert({
+            where: { userId },
+            create: { userId, status: 'connecting' },
+            update: { status: 'connecting' },
+          });
+        } catch (_e) {}
 
-        if (reconnectTimeout) clearTimeout(reconnectTimeout);
-        reconnectTimeout = setTimeout(() => {
-          initWhatsAppClient(io);
+        if (session.reconnectTimeout) clearTimeout(session.reconnectTimeout);
+        session.reconnectTimeout = setTimeout(() => {
+          initWhatsAppClient(io, userId);
         }, delayMs);
       }
     }
@@ -217,13 +265,20 @@ export async function initWhatsAppClient(io: SocketIOServer, force = false): Pro
         if (!remoteJid) continue;
         const phone = remoteJid.split('@')[0];
 
-        logger.info({ phone, text }, '🛑 Opt-out detectado! Registrando blacklist anti-ban.');
+        logger.info({ userId, phone, text }, '🛑 Opt-out detectado! Registrando blacklist anti-ban.');
 
-        await prisma.optOutContact.upsert({
-          where: { phone },
-          create: { phone, reason: `Solicitado via WhatsApp: "${text.trim()}"` },
-          update: { reason: `Atualizado via WhatsApp: "${text.trim()}"` },
-        });
+        try {
+          await prisma.optOutContact.upsert({
+            where: {
+              userId_phone: {
+                userId,
+                phone,
+              },
+            },
+            create: { userId, phone, reason: `Solicitado via WhatsApp: "${text.trim()}"` },
+            update: { reason: `Atualizado via WhatsApp: "${text.trim()}"` },
+          });
+        } catch (_e) {}
 
         // Responde cordialmente para evitar denúncias manuais
         try {
@@ -240,34 +295,70 @@ export async function initWhatsAppClient(io: SocketIOServer, force = false): Pro
 }
 
 /**
- * Disconnect and clear WhatsApp session.
+ * Desconecta e remove a sessão do WhatsApp do usuário
  */
-export async function logoutWhatsApp(io: SocketIOServer): Promise<void> {
-  currentQrCode = null;
-  isConnecting = false;
-  if (reconnectTimeout) {
-    clearTimeout(reconnectTimeout);
-    reconnectTimeout = null;
+export async function logoutWhatsApp(io: SocketIOServer, userId: string = 'default'): Promise<void> {
+  const session = getSession(userId);
+  session.currentQrCode = null;
+  session.isConnecting = false;
+
+  if (session.reconnectTimeout) {
+    clearTimeout(session.reconnectTimeout);
+    session.reconnectTimeout = null;
   }
-  if (waSocket) {
+
+  if (session.socket) {
     try {
-      await waSocket.logout();
+      await session.socket.logout();
     } catch (_) {}
-    waSocket = null;
+    session.socket = null;
   }
-  clearSession();
-  await prisma.whatsAppSession.upsert({
-    where: { id: 'default' },
-    create: { id: 'default', status: 'disconnected', phone: null },
-    update: { status: 'disconnected', phone: null },
+
+  clearUserSession(userId);
+
+  try {
+    await prisma.whatsAppSession.upsert({
+      where: { userId },
+      create: { userId, status: 'disconnected', phone: null },
+      update: { status: 'disconnected', phone: null },
+    });
+  } catch (_e) {}
+
+  emitToUser(io, userId, 'whatsapp:status', {
+    status: 'disconnected',
+    message: 'Desconectado com sucesso.',
   });
-  io.emit('whatsapp:status', { status: 'disconnected', message: 'Desconectado com sucesso.' });
-  logger.info('WhatsApp logged out and session cleared');
+
+  logger.info({ userId }, 'WhatsApp logged out and session cleared');
 }
 
-function clearSession(): void {
-  if (fs.existsSync(SESSION_DIR)) {
-    fs.rmSync(SESSION_DIR, { recursive: true, force: true });
-    logger.info('Session directory cleared');
+function clearUserSession(userId: string): void {
+  const dir = getUserSessionDir(userId);
+  if (fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    logger.info({ userId, dir }, 'User session directory cleared');
+  }
+}
+
+/**
+ * Restaura automaticamente todas as sessões que estavam ativas no banco
+ */
+export async function restoreAllActiveSessions(io: SocketIOServer): Promise<void> {
+  try {
+    const activeSessions = await prisma.whatsAppSession.findMany({
+      where: { status: 'connected' },
+    });
+
+    for (const s of activeSessions) {
+      const dir = getUserSessionDir(s.userId);
+      if (fs.existsSync(dir) && fs.readdirSync(dir).length > 0) {
+        logger.info({ userId: s.userId }, 'Restaurando sessão persistida do WhatsApp...');
+        initWhatsAppClient(io, s.userId).catch((err) => {
+          logger.warn({ userId: s.userId, err: err.message }, 'Falha ao restaurar sessão');
+        });
+      }
+    }
+  } catch (err: any) {
+    logger.error({ err: err.message }, 'Erro ao restaurar sessões ativas do WhatsApp');
   }
 }

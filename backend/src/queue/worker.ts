@@ -11,11 +11,11 @@ const prisma = new PrismaClient();
 let globalIo: SocketIOServer | null = null;
 
 /**
- * Simula indicador de digitação (ou gravação) com duração proporcional
+ * Simula indicador de digitação com duração proporcional
  * para emular presença humana realista no WhatsApp.
  */
-async function simulateTyping(phone: string, messageLength: number): Promise<void> {
-  const sock = getWASocket();
+async function simulateTyping(userId: string, phone: string, messageLength: number): Promise<void> {
+  const sock = getWASocket(userId);
   if (!sock) return;
 
   const jid = `${phone}@s.whatsapp.net`;
@@ -29,7 +29,7 @@ async function simulateTyping(phone: string, messageLength: number): Promise<voi
     await sleep(typingDuration);
     await sock.sendPresenceUpdate('paused', jid);
   } catch (_err) {
-    // Não-crítico: ignora caso falhe
+    // Ignora caso falhe
   }
 }
 
@@ -96,6 +96,7 @@ async function waitForResume(campaignId: string): Promise<boolean> {
 export async function executeMessageJob(jobData: MessageJobData): Promise<void> {
   const io = globalIo;
   const {
+    userId,
     campaignId,
     contactId,
     phone,
@@ -117,7 +118,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
     });
   }
 
-  logger.info({ campaignId, phone, index }, `📤 Processando contato ${index + 1}/${totalContacts}`);
+  logger.info({ campaignId, userId, phone, index }, `📤 Processando contato ${index + 1}/${totalContacts}`);
 
   // ── Checagem de pausa / cancelamento ──────────────────────────────────────
   const { paused, cancelled } = await checkCampaignFlags(campaignId);
@@ -136,11 +137,16 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
   // ── Checagem de Blacklist / Opt-Out preventivo ───────────────────────────
   const normalizedPhone = normalizePhone(phone);
   const isOptedOut = await prisma.optOutContact.findUnique({
-    where: { phone: normalizedPhone },
+    where: {
+      userId_phone: {
+        userId,
+        phone: normalizedPhone,
+      },
+    },
   });
 
   if (isOptedOut) {
-    logger.info({ campaignId, phone: normalizedPhone }, '🛑 Contato solicitou Opt-Out. Disparo cancelado preventivamente.');
+    logger.info({ campaignId, userId, phone: normalizedPhone }, '🛑 Contato solicitou Opt-Out. Disparo cancelado.');
     await prisma.contact.update({
       where: { id: contactId },
       data: { status: 'skipped', errorMsg: 'Opt-out (solicitou SAIR)' },
@@ -148,12 +154,18 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
     return;
   }
 
-  // ── Checagem de conexão com o WhatsApp ───────────────────────────────────
-  if (!isWhatsAppConnected()) {
-    io?.emit('whatsapp:status', {
-      status: 'disconnected',
-      message: 'WhatsApp desconectado durante o disparo! Reconecte o QR Code.',
-    });
+  // ── Checagem de conexão com o WhatsApp do usuário ────────────────────────
+  if (!isWhatsAppConnected(userId)) {
+    if (io) {
+      io.to(`user:${userId}`).emit('whatsapp:status', {
+        status: 'disconnected',
+        message: 'WhatsApp desconectado durante o disparo! Reconecte o QR Code.',
+      });
+      io.emit(`whatsapp:status:${userId}`, {
+        status: 'disconnected',
+        message: 'WhatsApp desconectado durante o disparo! Reconecte o QR Code.',
+      });
+    }
 
     await prisma.campaign.update({
       where: { id: campaignId },
@@ -163,12 +175,12 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
     io?.emit(`campaign:${campaignId}:status`, { status: 'paused', reason: 'whatsapp_disconnected' });
 
     let waited = 0;
-    while (!isWhatsAppConnected() && waited < 120000) {
+    while (!isWhatsAppConnected(userId) && waited < 120000) {
       await sleep(3000);
       waited += 3000;
     }
 
-    if (!isWhatsAppConnected()) {
+    if (!isWhatsAppConnected(userId)) {
       throw new Error('WhatsApp não reconectou após 120 segundos');
     }
 
@@ -178,16 +190,16 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
     });
   }
 
-  const sock = getWASocket()!;
+  const sock = getWASocket(userId)!;
 
-  // ── Verificação onWhatsApp prévia (evita erro e banimento com telefones fixos) ─
+  // ── Verificação onWhatsApp prévia ─────────────────────────────────────────
   let targetJid = `${normalizedPhone}@s.whatsapp.net`;
   try {
     const waCheck = await sock.onWhatsApp(normalizedPhone);
     if (waCheck && waCheck.length > 0 && waCheck[0]?.exists) {
       targetJid = waCheck[0].jid;
     } else {
-      logger.warn({ campaignId, phone: normalizedPhone }, '⚠️ Número não possui conta no WhatsApp');
+      logger.warn({ campaignId, userId, phone: normalizedPhone }, '⚠️ Número não possui conta no WhatsApp');
       await prisma.contact.update({
         where: { id: contactId },
         data: { status: 'failed', errorMsg: 'Número sem WhatsApp ativo' },
@@ -236,12 +248,11 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
   }
 
   // ── Simulação de Digitação Humanizada ──────────────────────────────────
-  await simulateTyping(targetJid.split('@')[0], message.length);
+  await simulateTyping(userId, targetJid.split('@')[0], message.length);
 
   // ── Envio da Mensagem (Texto ou Foto com Legenda) ───────────────────────
   let mediaSent = false;
 
-  // Resolve caminho da foto se houver
   let resolvedMediaPath: string | null = null;
   if (mediaUrl) {
     if (path.isAbsolute(mediaUrl) && fs.existsSync(mediaUrl)) {
@@ -258,7 +269,6 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
     // 📸 Envio com Foto
     let fileBuffer: any = fs.readFileSync(resolvedMediaPath);
 
-    // 🛡️ Blindagem Anti-Ban: Gera Hash SHA-256 único por foto enviada
     if (randomizeMedia !== false) {
       fileBuffer = randomizeImageBuffer(fileBuffer);
     }
@@ -267,7 +277,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
 
     await sock.sendMessage(targetJid, {
       image: fileBuffer as any,
-      caption: message, // Legenda com variáveis e spintax
+      caption: message,
       mimetype: mime,
     });
     mediaSent = true;
@@ -297,11 +307,17 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
     },
   });
 
-  // ── Atualiza histórico permanente no SavedContact ─────────────────────────
+  // ── Atualiza histórico permanente no SavedContact do usuário ─────────────
   try {
     await prisma.savedContact.upsert({
-      where: { phone: normalizedPhone },
+      where: {
+        userId_phone: {
+          userId,
+          phone: normalizedPhone,
+        },
+      },
       create: {
+        userId,
         phone: normalizedPhone,
         totalSent: 1,
         lastSentAt: new Date(),
@@ -339,7 +355,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
       });
     }
 
-    logger.info({ campaignId }, '✅ Campanha de disparos concluída com sucesso!');
+    logger.info({ campaignId, userId }, '✅ Campanha de disparos concluída com sucesso!');
     return;
   }
 
@@ -361,7 +377,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
  */
 export function initWorker(io: SocketIOServer): void {
   globalIo = io;
-  logger.info('🔧 Motor de Disparos Ativo com Blindagem Anti-Ban (Typing, Spintax, Hash SHA-256 e Opt-Out)');
+  logger.info('🔧 Motor de Disparos Multi-Tenant Ativo com Blindagem Anti-Ban');
 }
 
 function sleep(ms: number): Promise<void> {

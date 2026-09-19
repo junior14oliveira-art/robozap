@@ -5,12 +5,14 @@ import path from 'path';
 import cors from 'cors';
 import { Server as SocketIOServer } from 'socket.io';
 import { setupSocketHandlers } from './socket';
+import { authRouter } from './routes/auth';
+import { contactRouter } from './routes/contact';
 import { whatsappRouter } from './routes/whatsapp';
 import { campaignRouter } from './routes/campaign';
 import { uploadRouter } from './routes/upload';
 import { templateRouter } from './routes/template';
 import { errorHandler } from './middleware/errorHandler';
-import { initWhatsAppClient } from './whatsapp/client';
+import { restoreAllActiveSessions } from './whatsapp/client';
 import { initWorker } from './queue/worker';
 import pino from 'pino';
 
@@ -27,7 +29,7 @@ const allowedOrigins = rawFrontendUrls.split(',').map((u) => u.trim());
 function isOriginAllowed(origin: string | undefined): boolean {
   if (!origin) return true;
   if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) return true;
-  if (origin.endsWith('.vercel.app')) return true;
+  if (origin.endsWith('.vercel.app') || origin.endsWith('.onrender.com')) return true;
   return true; // Permissivo para integrações web
 }
 
@@ -60,6 +62,8 @@ async function bootstrap() {
   });
 
   // Routes
+  app.use('/api/auth', authRouter);
+  app.use('/api/contacts', contactRouter);
   app.use('/api/whatsapp', whatsappRouter);
   app.use('/api/campaigns', campaignRouter);
   app.use('/api/upload', uploadRouter);
@@ -68,10 +72,11 @@ async function bootstrap() {
   // Health & Root Status
   app.get('/', (_req, res) => {
     res.json({
-      name: 'RoboZap WhatsApp Automation API',
+      name: 'RoboZap WhatsApp Automation Multi-User SaaS API',
       status: 'online',
-      version: '1.0.0',
-      message: 'Backend do RoboZap está online e pronto para receber conexões!',
+      version: '2.0.0',
+      database: 'Supabase PostgreSQL',
+      message: 'Backend do RoboZap Multi-Usuário está online!',
     });
   });
 
@@ -87,14 +92,14 @@ async function bootstrap() {
 
   // Start server
   server.listen(PORT, () => {
-    logger.info(`🚀 RoboZap Backend running on http://localhost:${PORT}`);
+    logger.info(`🚀 RoboZap Multi-User SaaS Backend running on http://localhost:${PORT}`);
   });
 
-  // Initialize WhatsApp client
-  await initWhatsAppClient(io);
-
-  // Initialize BullMQ worker
+  // Initialize BullMQ / Native queue worker
   initWorker(io);
+
+  // Restore existing active WhatsApp sessions
+  await restoreAllActiveSessions(io);
 }
 
 bootstrap().catch((err) => {
