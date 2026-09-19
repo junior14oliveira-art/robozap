@@ -44,7 +44,7 @@ const schema = z.object({
   batchSize: z.coerce.number().min(5).max(100),
   batchPauseMin: z.coerce.number().min(1).max(30),
   randomizeMedia: z.boolean().default(true),
-  optOutFooter: z.boolean().default(true),
+  optOutFooter: z.boolean().default(false),
 }).refine((d) => d.delayMax >= d.delayMin, {
   message: 'Delay máximo deve ser maior que o mínimo',
   path: ['delayMax'],
@@ -147,7 +147,7 @@ export default function NewCampaignPage() {
       batchSize: 20,
       batchPauseMin: 3,
       randomizeMedia: true,
-      optOutFooter: true,
+      optOutFooter: false,
     },
   });
 
@@ -244,7 +244,7 @@ export default function NewCampaignPage() {
       .trim();
 
     if (optOutFooter) {
-      message += '\n\n_Para não receber mais mensagens, responda SAIR._';
+      message += '\n\n_Se deseja não receber mais digite sair._';
     }
 
     return message.trim();
@@ -697,14 +697,14 @@ export default function NewCampaignPage() {
                 </label>
 
                 {/* Opt-Out Footer */}
-                <label className="flex items-center justify-between p-3 rounded-xl bg-secondary/40 hover:bg-secondary/60 transition-colors cursor-pointer">
+                <label className="flex items-center justify-between p-3.5 rounded-xl border border-border bg-secondary/30 hover:bg-secondary/50 transition-colors cursor-pointer">
                   <div className="space-y-0.5">
                     <p className="text-xs font-semibold text-foreground flex items-center gap-1.5">
                       <UserX className="h-4 w-4 text-whatsapp" />
-                      Rodapé Anti-Denúncia (&quot;Responda SAIR&quot;)
+                      Rodapé de Cancelamento (&quot;Se deseja não receber mais digite sair.&quot;)
                     </p>
                     <p className="text-[11px] text-muted-foreground">
-                      Evita que os destinatários cliquem em &quot;Denunciar Spam&quot; no WhatsApp. O robô detecta a resposta SAIR e remove o contato automaticamente.
+                      Desmarcado por padrão. Se ativado, inclui o aviso no final da mensagem para quem responder SAIR ser removido automaticamente.
                     </p>
                   </div>
                   <input

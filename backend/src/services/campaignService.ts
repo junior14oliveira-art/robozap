@@ -159,7 +159,7 @@ export function processTemplate(
 
   // 4. Adiciona rodapé de Opt-Out anti-denúncia se habilitado
   if (options?.optOutFooter) {
-    message += '\n\n_Para não receber mais mensagens, responda SAIR._';
+    message += '\n\n_Se deseja não receber mais digite sair._';
   }
 
   return message.trim();

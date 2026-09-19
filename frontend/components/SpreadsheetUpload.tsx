@@ -18,8 +18,13 @@ import {
   Trash2,
   Plus,
   ClipboardPaste,
+  Users,
+  Loader2,
+  RefreshCw,
+  Search,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { apiFetch } from '@/lib/api';
 
 export interface ParsedContact {
   phone: string;
@@ -232,7 +237,7 @@ function processWorkbook(
 }
 
 export function SpreadsheetUpload({ onParsed, onClear }: SpreadsheetUploadProps) {
-  const [mode, setMode] = useState<'upload' | 'manual'>('upload');
+  const [mode, setMode] = useState<'upload' | 'manual' | 'crm'>('upload');
   const [data, setData] = useState<SpreadsheetData | null>(null);
   const [workbook, setWorkbook] = useState<XLSX.WorkBook | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -247,6 +252,89 @@ export function SpreadsheetUpload({ onParsed, onClear }: SpreadsheetUploadProps)
   // Colar em lote
   const [showBulkPaste, setShowBulkPaste] = useState(false);
   const [bulkText, setBulkText] = useState('');
+
+  // Contatos salvos do Perfil (CRM)
+  const [savedContacts, setSavedContacts] = useState<any[]>([]);
+  const [loadingSaved, setLoadingSaved] = useState(false);
+  const [savedSearch, setSavedSearch] = useState('');
+  const [savedFilter, setSavedFilter] = useState<'all' | 'uncontacted' | 'contacted'>('all');
+  const [selectedSavedIds, setSelectedSavedIds] = useState<string[]>([]);
+
+  const loadSavedContacts = async () => {
+    setLoadingSaved(true);
+    try {
+      const res = await apiFetch<{ contacts: any[] }>('/api/contacts?limit=10000');
+      setSavedContacts(res.contacts || []);
+      setSelectedSavedIds((res.contacts || []).map((c: any) => c.id));
+    } catch (err: any) {
+      console.error(err);
+    } finally {
+      setLoadingSaved(false);
+    }
+  };
+
+  const handleApplySavedContacts = () => {
+    const filtered = savedContacts.filter((c) => {
+      if (!selectedSavedIds.includes(c.id)) return false;
+      if (savedFilter === 'uncontacted') return c.totalSent === 0;
+      if (savedFilter === 'contacted') return c.totalSent > 0;
+      if (savedSearch.trim()) {
+        const s = savedSearch.toLowerCase();
+        return (
+          (c.name && c.name.toLowerCase().includes(s)) ||
+          c.phone.includes(s) ||
+          (c.company && c.company.toLowerCase().includes(s))
+        );
+      }
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      alert('Nenhum contato selecionado com os filtros atuais.');
+      return;
+    }
+
+    const contacts: ParsedContact[] = filtered.map((c) => {
+      let extraVars: any = {};
+      try {
+        if (c.variables) extraVars = JSON.parse(c.variables);
+      } catch (_) {}
+
+      return {
+        phone: c.phone,
+        formattedPhone: formatPhoneDisplay(c.phone),
+        name: c.name || '',
+        company: c.company || '',
+        'Telefone': c.phone,
+        'Nome': c.name || '',
+        'Empresa': c.company || '',
+        'Responsável': c.name || '',
+        'Nome da Empresa': c.company || '',
+        ...extraVars,
+      };
+    });
+
+    const columns = Array.from(
+      new Set(['Telefone', 'Nome', 'Empresa', 'Responsável', 'Nome da Empresa', ...Object.keys(contacts[0] || {})])
+    );
+
+    const updatedData: SpreadsheetData = {
+      contacts,
+      columns,
+      totalRows: contacts.length,
+      validContactsCount: contacts.length,
+      emptyPhoneCount: 0,
+      detectedPhoneColumn: 'Telefone',
+      detectedNameColumn: 'Nome',
+      preview: contacts.slice(0, 5),
+      warnings: [],
+      hasPhoneColumn: true,
+      filename: `Contatos do Perfil (${contacts.length} contatos)`,
+    };
+
+    setData(updatedData);
+    onParsed(updatedData);
+  };
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
@@ -453,14 +541,14 @@ export function SpreadsheetUpload({ onParsed, onClear }: SpreadsheetUploadProps)
 
   return (
     <div className="space-y-6">
-      {/* Selector de Modo: Planilha ou Manual */}
+      {/* Selector de Modo: Planilha, Manual ou Puxar do Perfil */}
       {!data && (
-        <div className="flex rounded-xl bg-secondary/50 p-1 border border-border">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-1 rounded-xl bg-secondary/50 p-1 border border-border">
           <button
             type="button"
             onClick={() => setMode('upload')}
             className={cn(
-              'flex flex-1 items-center justify-center gap-2 rounded-lg py-2.5 text-xs font-semibold transition-all',
+              'flex items-center justify-center gap-2 rounded-lg py-2.5 text-xs font-semibold transition-all',
               mode === 'upload'
                 ? 'bg-card text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground'
@@ -473,15 +561,143 @@ export function SpreadsheetUpload({ onParsed, onClear }: SpreadsheetUploadProps)
             type="button"
             onClick={() => setMode('manual')}
             className={cn(
-              'flex flex-1 items-center justify-center gap-2 rounded-lg py-2.5 text-xs font-semibold transition-all',
+              'flex items-center justify-center gap-2 rounded-lg py-2.5 text-xs font-semibold transition-all',
               mode === 'manual'
                 ? 'bg-card text-foreground shadow-sm'
                 : 'text-muted-foreground hover:text-foreground'
             )}
           >
             <UserPlus className="h-4 w-4 text-primary" />
-            Inserir Contatos Manualmente
+            Inserir Manualmente
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMode('crm');
+              loadSavedContacts();
+            }}
+            className={cn(
+              'flex items-center justify-center gap-2 rounded-lg py-2.5 text-xs font-semibold transition-all',
+              mode === 'crm'
+                ? 'bg-card text-whatsapp shadow-sm font-bold'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            <Users className="h-4 w-4 text-whatsapp" />
+            Puxar Contatos Já Salvos
+          </button>
+        </div>
+      )}
+
+      {/* ÁREA CRM: Puxar Contatos Salvos do Perfil */}
+      {!data && mode === 'crm' && (
+        <div className="rounded-2xl border border-whatsapp/30 bg-card p-6 space-y-5 animate-slide-up shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border pb-4">
+            <div>
+              <div className="flex items-center gap-2">
+                <Users className="h-5 w-5 text-whatsapp" />
+                <h3 className="font-bold text-foreground">Contatos Salvos no seu Perfil</h3>
+              </div>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Selecione os contatos já cadastrados no seu CRM para disparar esta campanha.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={loadSavedContacts}
+              disabled={loadingSaved}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground rounded-lg border border-border px-3 py-1.5 hover:bg-secondary transition"
+            >
+              <RefreshCw className={cn('h-3.5 w-3.5', loadingSaved && 'animate-spin')} />
+              Atualizar Base
+            </button>
+          </div>
+
+          {loadingSaved ? (
+            <div className="py-12 text-center text-muted-foreground">
+              <Loader2 className="mx-auto h-7 w-7 animate-spin text-whatsapp mb-2" />
+              <p className="text-sm">Carregando contatos salvos do seu perfil...</p>
+            </div>
+          ) : savedContacts.length === 0 ? (
+            <div className="py-10 text-center text-muted-foreground">
+              <p className="text-sm font-medium text-foreground">Nenhum contato salvo ainda no seu perfil.</p>
+              <p className="text-xs mt-1">Suba uma planilha na aba ao lado para que os clientes fiquem salvos permanentemente!</p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {/* Filtros e Busca */}
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="relative w-full sm:w-72">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                  <input
+                    type="text"
+                    value={savedSearch}
+                    onChange={(e) => setSavedSearch(e.target.value)}
+                    placeholder="Buscar por nome ou telefone..."
+                    className="w-full rounded-xl border border-border bg-secondary/50 py-1.5 pl-8 pr-3 text-xs text-foreground placeholder-muted-foreground outline-none focus:border-whatsapp"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5 w-full sm:w-auto">
+                  <button
+                    type="button"
+                    onClick={() => setSavedFilter('all')}
+                    className={cn(
+                      'rounded-lg px-2.5 py-1 text-xs font-medium transition',
+                      savedFilter === 'all'
+                        ? 'bg-whatsapp text-white'
+                        : 'bg-secondary text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    Todos ({savedContacts.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSavedFilter('uncontacted')}
+                    className={cn(
+                      'rounded-lg px-2.5 py-1 text-xs font-medium transition',
+                      savedFilter === 'uncontacted'
+                        ? 'bg-whatsapp text-white'
+                        : 'bg-secondary text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    Nunca Contatados ({savedContacts.filter((c) => c.totalSent === 0).length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSavedFilter('contacted')}
+                    className={cn(
+                      'rounded-lg px-2.5 py-1 text-xs font-medium transition',
+                      savedFilter === 'contacted'
+                        ? 'bg-whatsapp text-white'
+                        : 'bg-secondary text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    Já Contatados ({savedContacts.filter((c) => c.totalSent > 0).length})
+                  </button>
+                </div>
+              </div>
+
+              {/* Botão de Ação */}
+              <div className="flex items-center justify-between rounded-xl bg-whatsapp/10 border border-whatsapp/20 p-3">
+                <span className="text-xs text-foreground font-medium">
+                  {savedContacts.filter((c) => {
+                    if (savedFilter === 'uncontacted') return c.totalSent === 0;
+                    if (savedFilter === 'contacted') return c.totalSent > 0;
+                    return true;
+                  }).length} contato(s) prontos para carregar nesta campanha
+                </span>
+                <button
+                  type="button"
+                  onClick={handleApplySavedContacts}
+                  className="rounded-xl bg-whatsapp px-4 py-2 text-xs font-bold text-white shadow-md hover:brightness-110 transition flex items-center gap-1.5"
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  Carregar Contatos na Campanha
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

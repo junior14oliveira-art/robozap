@@ -6,6 +6,7 @@ import cors from 'cors';
 import { Server as SocketIOServer } from 'socket.io';
 import { setupSocketHandlers } from './socket';
 import { authRouter } from './routes/auth';
+import { userRouter } from './routes/user';
 import { contactRouter } from './routes/contact';
 import { whatsappRouter } from './routes/whatsapp';
 import { campaignRouter } from './routes/campaign';
@@ -63,6 +64,7 @@ async function bootstrap() {
 
   // Routes
   app.use('/api/auth', authRouter);
+  app.use('/api/users', userRouter);
   app.use('/api/contacts', contactRouter);
   app.use('/api/whatsapp', whatsappRouter);
   app.use('/api/campaigns', campaignRouter);

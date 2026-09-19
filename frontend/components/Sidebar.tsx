@@ -13,6 +13,7 @@ import {
   Users,
   LogOut,
   User as UserIcon,
+  ShieldCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useWhatsAppStatus } from '@/hooks/useWhatsAppStatus';
@@ -37,6 +38,13 @@ export function Sidebar() {
     return null;
   }
 
+  const itemsToRender = [
+    ...navItems,
+    ...(user?.role === 'admin'
+      ? [{ href: '/users', icon: ShieldCheck, label: 'Usuários' }]
+      : []),
+  ];
+
   const statusColor =
     waStatus.status === 'connected'
       ? 'bg-whatsapp animate-pulse-green'
@@ -59,7 +67,7 @@ export function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 space-y-1 p-4">
-        {navItems.map(({ href, icon: Icon, label }) => {
+        {itemsToRender.map(({ href, icon: Icon, label }) => {
           const isActive = pathname === href || (href !== '/' && pathname.startsWith(href));
           return (
             <Link
