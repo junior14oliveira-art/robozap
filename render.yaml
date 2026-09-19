@@ -1,0 +1,52 @@
+﻿services:
+  # ─────────────────────────────────────────────────────────────
+  # 1. MOTOR DO WHATSAPP (BACKEND API + BAILEYS + FILA)
+  # ─────────────────────────────────────────────────────────────
+  - type: web
+    name: robozap-backend
+    runtime: node
+    rootDir: backend
+    plan: starter
+    region: ohio
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: FRONTEND_URL
+        fromService:
+          type: web
+          name: robozap-frontend
+          property: host
+      - key: SESSION_DIR
+        value: /var/data/sessions
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      - key: DATABASE_URL
+        value: file:/var/data/dev.db
+    disk:
+      name: robozap-data
+      mountPath: /var/data
+      sizeGB: 1
+
+  # ─────────────────────────────────────────────────────────────
+  # 2. INTERFACE WEB (FRONTEND NEXT.JS)
+  # ─────────────────────────────────────────────────────────────
+  - type: web
+    name: robozap-frontend
+    runtime: node
+    rootDir: frontend
+    plan: free
+    region: ohio
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          type: web
+          name: robozap-backend
+          property: host

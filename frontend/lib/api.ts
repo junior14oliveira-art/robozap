@@ -1,4 +1,13 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+function formatApiUrl(raw?: string): string {
+  if (!raw) return 'http://localhost:3001';
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed.replace(/\/+$/, '');
+  }
+  return `https://${trimmed.replace(/\/+$/, '')}`;
+}
+
+export const API_URL = formatApiUrl(process.env.NEXT_PUBLIC_API_URL);
 
 export async function apiFetch<T>(
   path: string,
