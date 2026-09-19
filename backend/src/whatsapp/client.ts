@@ -20,6 +20,7 @@ const prisma = new PrismaClient();
 // Singleton socket instance
 let waSocket: WASocket | null = null;
 let isConnecting = false;
+let currentQrCode: string | null = null;
 let reconnectTimeout: NodeJS.Timeout | null = null;
 
 const SESSION_DIR = path.resolve(
@@ -35,14 +36,40 @@ export function isWhatsAppConnected(): boolean {
   return waSocket !== null && (waSocket as any).user !== undefined;
 }
 
+export function getCurrentQrCode(): string | null {
+  return currentQrCode;
+}
+
 /**
  * Initialize the WhatsApp Baileys client.
  * Handles QR Code generation, session persistence, and reconnection logic.
  */
-export async function initWhatsAppClient(io: SocketIOServer): Promise<void> {
-  if (isConnecting) {
-    logger.warn('WhatsApp client already initializing, skipping...');
+export async function initWhatsAppClient(io: SocketIOServer, force = false): Promise<void> {
+  if (isWhatsAppConnected()) {
+    const phone = waSocket?.user?.id?.split(':')[0] || 'unknown';
+    io.emit('whatsapp:status', {
+      status: 'connected',
+      phone,
+      message: `Conectado como ${phone}`,
+    });
     return;
+  }
+
+  if (isConnecting && !force) {
+    logger.warn('WhatsApp client already initializing...');
+    if (currentQrCode) {
+      io.emit('whatsapp:qr', { qr: currentQrCode });
+      io.emit('whatsapp:status', { status: 'qr_ready', message: 'Escaneie o QR Code para conectar' });
+    }
+    return;
+  }
+
+  if (force && waSocket) {
+    try {
+      waSocket.end(undefined);
+    } catch (_) {}
+    waSocket = null;
+    currentQrCode = null;
   }
 
   isConnecting = true;
@@ -91,6 +118,7 @@ export async function initWhatsAppClient(io: SocketIOServer): Promise<void> {
       logger.info('📲 QR Code generated, scan it to connect WhatsApp');
       try {
         const qrDataUrl = await QRCode.toDataURL(qr, { width: 300 });
+        currentQrCode = qrDataUrl;
         io.emit('whatsapp:qr', { qr: qrDataUrl });
         io.emit('whatsapp:status', { status: 'qr_ready', message: 'Escaneie o QR Code para conectar' });
       } catch (err) {
@@ -100,13 +128,14 @@ export async function initWhatsAppClient(io: SocketIOServer): Promise<void> {
       // Update DB
       await prisma.whatsAppSession.upsert({
         where: { id: 'default' },
-        create: { id: 'default', status: 'connecting' },
-        update: { status: 'connecting' },
+        create: { id: 'default', status: 'qr_ready' },
+        update: { status: 'qr_ready' },
       });
     }
 
     if (connection === 'open') {
       isConnecting = false;
+      currentQrCode = null;
       const phone = sock.user?.id?.split(':')[0] || 'unknown';
       logger.info({ phone }, '✅ WhatsApp connected successfully!');
 
@@ -133,6 +162,7 @@ export async function initWhatsAppClient(io: SocketIOServer): Promise<void> {
       if (isLoggedOut) {
         logger.info('🗑️ Sessão encerrada pelo usuário/WhatsApp (Logout). Limpando sessão...');
         waSocket = null;
+        currentQrCode = null;
         clearSession();
 
         io.emit('whatsapp:status', {
@@ -213,11 +243,24 @@ export async function initWhatsAppClient(io: SocketIOServer): Promise<void> {
  * Disconnect and clear WhatsApp session.
  */
 export async function logoutWhatsApp(io: SocketIOServer): Promise<void> {
+  currentQrCode = null;
+  isConnecting = false;
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
   if (waSocket) {
-    await waSocket.logout();
+    try {
+      await waSocket.logout();
+    } catch (_) {}
     waSocket = null;
   }
   clearSession();
+  await prisma.whatsAppSession.upsert({
+    where: { id: 'default' },
+    create: { id: 'default', status: 'disconnected', phone: null },
+    update: { status: 'disconnected', phone: null },
+  });
   io.emit('whatsapp:status', { status: 'disconnected', message: 'Desconectado com sucesso.' });
   logger.info('WhatsApp logged out and session cleared');
 }

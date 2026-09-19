@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { getSocket } from '@/lib/socket';
+import { API_URL } from '@/lib/api';
 
 export interface WhatsAppStatus {
   status: 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
@@ -12,44 +13,74 @@ export interface WhatsAppStatus {
 
 export function useWhatsAppStatus() {
   const [waStatus, setWaStatus] = useState<WhatsAppStatus>({
-    status: 'disconnected',
-    message: 'Carregando status...',
+    status: 'connecting',
+    message: 'Verificando conexão...',
   });
   const [qrCode, setQrCode] = useState<string | null>(null);
 
-  useEffect(() => {
-    // Fetch initial status from REST
-    fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/whatsapp/status`)
-      .then((r) => r.json())
-      .then((data) => {
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/whatsapp/status`, {
+        cache: 'no-store',
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+
+      if (data.connected) {
         setWaStatus({
-          status: data.connected ? 'connected' : (data.status as WhatsAppStatus['status']),
+          status: 'connected',
           phone: data.phone,
-          message: data.connected ? `Conectado como ${data.phone}` : 'Desconectado',
+          message: `Conectado como ${data.phone}`,
         });
-      })
-      .catch(() => {});
-
-    // Listen for realtime updates
-    const socket = getSocket();
-
-    socket.on('whatsapp:status', (data: WhatsAppStatus) => {
-      setWaStatus(data);
-      if (data.status === 'connected') {
-        setQrCode(null); // Hide QR after connection
+        setQrCode(null);
+      } else if (data.qr) {
+        setQrCode(data.qr);
+        setWaStatus({
+          status: 'qr_ready',
+          message: 'Escaneie o QR Code para conectar',
+        });
+      } else {
+        const isConn = data.status === 'connecting';
+        setWaStatus({
+          status: (data.status as WhatsAppStatus['status']) || 'disconnected',
+          phone: data.phone,
+          message: isConn ? 'Aguardando conexão...' : 'Desconectado',
+        });
       }
-    });
-
-    socket.on('whatsapp:qr', ({ qr }: { qr: string }) => {
-      setQrCode(qr);
-      setWaStatus({ status: 'qr_ready', message: 'Escaneie o QR Code' });
-    });
-
-    return () => {
-      socket.off('whatsapp:status');
-      socket.off('whatsapp:qr');
-    };
+    } catch (_) {}
   }, []);
 
-  return { waStatus, qrCode };
+  useEffect(() => {
+    // 1. Busca inicial imediata
+    fetchStatus();
+
+    // 2. Sincronização periódica a cada 3.5 segundos (garantia de 100% sincronia)
+    const interval = setInterval(fetchStatus, 3500);
+
+    // 3. Atualizações em tempo real via Socket.io
+    const socket = getSocket();
+
+    const onStatus = (data: WhatsAppStatus) => {
+      setWaStatus(data);
+      if (data.status === 'connected') {
+        setQrCode(null);
+      }
+    };
+
+    const onQr = ({ qr }: { qr: string }) => {
+      setQrCode(qr);
+      setWaStatus({ status: 'qr_ready', message: 'Escaneie o QR Code para conectar' });
+    };
+
+    socket.on('whatsapp:status', onStatus);
+    socket.on('whatsapp:qr', onQr);
+
+    return () => {
+      clearInterval(interval);
+      socket.off('whatsapp:status', onStatus);
+      socket.off('whatsapp:qr', onQr);
+    };
+  }, [fetchStatus]);
+
+  return { waStatus, qrCode, refreshStatus: fetchStatus };
 }

@@ -21,7 +21,7 @@ import Image from 'next/image';
 import { cn } from '@/lib/utils';
 
 export default function ConnectPage() {
-  const { waStatus, qrCode } = useWhatsAppStatus();
+  const { waStatus, qrCode, refreshStatus } = useWhatsAppStatus();
   const { toast } = useToast();
   const [loading, setLoading] = useState<string | null>(null);
 
@@ -30,6 +30,7 @@ export default function ConnectPage() {
     try {
       await apiFetch('/api/whatsapp/connect', { method: 'POST' });
       toast({ title: '📱 Gerando QR Code...', description: 'Aguarde alguns segundos.' });
+      setTimeout(refreshStatus, 1500);
     } catch (err: any) {
       toast({ title: 'Erro', description: err.message, variant: 'destructive' });
     } finally {
@@ -42,6 +43,7 @@ export default function ConnectPage() {
     try {
       await apiFetch('/api/whatsapp/logout', { method: 'POST' });
       toast({ title: '✅ Desconectado', description: 'Sessão encerrada com sucesso.' });
+      setTimeout(refreshStatus, 1000);
     } catch (err: any) {
       toast({ title: 'Erro', description: err.message, variant: 'destructive' });
     } finally {
@@ -67,28 +69,43 @@ export default function ConnectPage() {
         {/* Status header */}
         <div
           className={cn(
-            'flex items-center gap-3 px-6 py-4 border-b border-border',
+            'flex items-center justify-between px-6 py-4 border-b border-border',
             isConnected && 'bg-whatsapp/5',
             isConnecting && 'bg-yellow-500/5'
           )}
         >
-          <div
-            className={cn(
-              'h-3 w-3 rounded-full',
-              isConnected
-                ? 'bg-whatsapp animate-pulse-green'
+          <div className="flex items-center gap-3">
+            <div
+              className={cn(
+                'h-3 w-3 rounded-full',
+                isConnected
+                  ? 'bg-whatsapp animate-pulse-green'
+                  : isConnecting
+                  ? 'bg-yellow-400 animate-pulse'
+                  : 'bg-muted-foreground/40'
+              )}
+            />
+            <span className="font-medium text-foreground">
+              {isConnected
+                ? `Conectado${waStatus.phone ? ` — ${waStatus.phone}` : ''}`
                 : isConnecting
-                ? 'bg-yellow-400 animate-pulse'
-                : 'bg-muted-foreground/40'
-            )}
-          />
-          <span className="font-medium text-foreground">
-            {isConnected
-              ? `Conectado${waStatus.phone ? ` — ${waStatus.phone}` : ''}`
-              : isConnecting
-              ? 'Aguardando conexão...'
-              : 'Desconectado'}
-          </span>
+                ? 'Aguardando conexão...'
+                : 'Desconectado'}
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              refreshStatus();
+              toast({ title: '🔄 Sincronizando...', description: 'Verificando status com o robô.' });
+            }}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2.5 py-1 rounded-lg hover:bg-secondary transition-all"
+            title="Sincronizar agora"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            <span>Sincronizar</span>
+          </button>
         </div>
 
         <div className="p-8">
@@ -178,6 +195,29 @@ export default function ConnectPage() {
                     Número vinculado: {waStatus.phone}
                   </p>
                 )}
+              </div>
+
+              <div className="flex flex-wrap justify-center gap-3">
+                <button
+                  onClick={handleConnect}
+                  disabled={!!loading}
+                  className="flex items-center gap-2 rounded-xl bg-whatsapp px-5 py-2.5 text-sm font-semibold text-white hover:bg-whatsapp-dark transition-all shadow-md disabled:opacity-50"
+                >
+                  {loading === 'connect' ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <QrCode className="h-4 w-4" />
+                  )}
+                  {loading === 'connect' ? 'Gerando QR...' : 'Gerar QR Code Agora'}
+                </button>
+                <button
+                  onClick={handleLogout}
+                  disabled={!!loading}
+                  className="flex items-center gap-2 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-2.5 text-sm font-medium text-destructive hover:bg-destructive/20 transition-all disabled:opacity-50"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Resetar Sessão
+                </button>
               </div>
             </div>
           ) : (
