@@ -65,8 +65,17 @@ async function bootstrap() {
   app.use('/api/upload', uploadRouter);
   app.use('/api/templates', templateRouter);
 
-  // Health check
-  app.get('/api/health', (_req, res) => {
+  // Health & Root Status
+  app.get('/', (_req, res) => {
+    res.json({
+      name: 'RoboZap WhatsApp Automation API',
+      status: 'online',
+      version: '1.0.0',
+      message: 'Backend do RoboZap está online e pronto para receber conexões!',
+    });
+  });
+
+  app.get(['/health', '/api/health'], (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
