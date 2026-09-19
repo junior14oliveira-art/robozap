@@ -1,0 +1,65 @@
+version: '3.9'
+
+services:
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: robozap-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend ────────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: robozap-backend
+    restart: unless-stopped
+    ports:
+      - '3001:3001'
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=file:/app/data/prod.db
+      - FRONTEND_URL=http://localhost:3000
+      - SESSION_DIR=/app/sessions
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      - backend_sessions:/app/sessions
+      - backend_uploads:/app/uploads
+      - backend_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ── Frontend ───────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: robozap-frontend
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://backend:3001
+      - NEXT_PUBLIC_SOCKET_URL=http://backend:3001
+    depends_on:
+      - backend
+
+volumes:
+  redis_data:
+  backend_sessions:
+  backend_uploads:
+  backend_data:

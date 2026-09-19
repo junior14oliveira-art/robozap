@@ -1,0 +1,34 @@
+# Node
+node_modules/
+dist/
+.next/
+out/
+
+# Env files
+.env
+.env.local
+
+# WhatsApp sessions (SENSÍVEL — nunca commitar)
+sessions/
+auth_info/
+
+# Uploads
+uploads/
+
+# Database & Data
+*.db
+*.db-journal
+*.xlsx
+*.csv
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.tsbuildinfo
+.turbo/

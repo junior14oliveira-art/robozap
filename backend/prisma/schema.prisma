@@ -1,0 +1,113 @@
+// Generator and datasource
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Campaign = uma sessão de disparos
+model Campaign {
+  id               String       @id @default(uuid())
+  name             String
+  status           String       @default("pending") // pending | running | paused | completed | cancelled | failed
+  totalContacts    Int          @default(0)
+  sentCount        Int          @default(0)
+  failedCount      Int          @default(0)
+  messageTemplate  String       // template da mensagem (pode ter {{nome}}, {{variavel}}, spintax {a|b})
+  mediaUrl         String?      // caminho da imagem anexada
+  mediaType        String?      // "image" | "document"
+  delayMin         Int          @default(15) // segundos mínimos entre mensagens
+  delayMax         Int          @default(45) // segundos máximos entre mensagens
+  batchSize        Int          @default(20) // tamanho do lote para resfriamento (batch cooling)
+  batchPauseMin    Int          @default(3)  // pausa em minutos entre lotes
+  randomizeMedia   Boolean      @default(true) // gera hash SHA-256 único por foto enviada
+  optOutFooter     Boolean      @default(true) // adiciona rodapé anti-denúncia "Responda SAIR"
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  contacts         Contact[]
+  logs             MessageLog[]
+}
+
+// Contato individual de uma campanha
+model Contact {
+  id          String   @id @default(uuid())
+  campaignId  String
+  phone       String
+  name        String?
+  variables   String?  // JSON string com variáveis extras (ex: {"empresa": "ACME"})
+  status      String   @default("pending") // pending | sent | failed | skipped | opted_out
+  errorMsg    String?
+  sentAt      DateTime?
+
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@index([status])
+}
+
+// Log de cada tentativa de envio
+model MessageLog {
+  id          String   @id @default(uuid())
+  campaignId  String
+  phone       String
+  message     String
+  mediaSent   Boolean  @default(false)
+  status      String   // sent | failed
+  errorMsg    String?
+  duration    Int?     // ms que levou para enviar
+  createdAt   DateTime @default(now())
+
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+}
+
+// Templates de mensagens salvas
+model MessageTemplate {
+  id        String   @id @default(uuid())
+  name      String
+  body      String
+  mediaUrl  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Estado da sessão WhatsApp
+model WhatsAppSession {
+  id        String   @id @default("default")
+  status    String   @default("disconnected") // disconnected | connecting | connected
+  phone     String?
+  updatedAt DateTime @updatedAt
+}
+
+// Blacklist de contatos que responderam SAIR (Opt-Out automático)
+model OptOutContact {
+  id        String   @id @default(uuid())
+  phone     String   @unique
+  reason    String?  @default("Solicitado pelo usuário")
+  createdAt DateTime @default(now())
+
+  @@index([phone])
+}
+
+// Base global de contatos salvos no sistema (anti-duplicação e histórico de envios)
+model SavedContact {
+  id          String    @id @default(uuid())
+  phone       String    @unique
+  name        String?
+  company     String?
+  variables   String?   // JSON com colunas e dados extras da planilha
+  totalSent   Int       @default(0)
+  lastSentAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([phone])
+}
+
