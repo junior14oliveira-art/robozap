@@ -7,6 +7,11 @@ export const redisConnection = new IORedis(process.env.REDIS_URL || 'redis://loc
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
   lazyConnect: true,
+  retryStrategy: () => null, // Evita tentativas infinitas quando o Redis não estiver presente
+});
+
+redisConnection.on('error', () => {
+  // Silencia erros caso não haja servidor Redis na hospedagem
 });
 
 export let isRedisBullMQCompatible = false;
@@ -33,8 +38,8 @@ redisConnection
       logger.info('ℹ️ Ativando Motor de Fila Nativo Assíncrono.');
     }
   })
-  .catch((_err) => {
-    logger.info('ℹ️ Redis indisponível ou sem suporte a BullMQ. Usando Motor de Fila Nativo Assíncrono.');
+  .catch(() => {
+    logger.info('ℹ️ Redis indisponível. Usando Motor de Fila Nativo Assíncrono.');
   });
 
 // ── Queue Types & Structures ───────────────────────────────────────────────
