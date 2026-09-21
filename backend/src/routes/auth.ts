@@ -1,10 +1,9 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { PrismaClient } from '@prisma/client';
 import { requireAuth, AuthRequest } from '../middleware/auth';
+import { prisma } from '../prisma';
 
-const prisma = new PrismaClient();
 export const authRouter = Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'robozap-jwt-secret-key-super-secure-2026-saas';

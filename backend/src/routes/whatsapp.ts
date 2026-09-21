@@ -12,8 +12,8 @@ import {
 } from '../whatsapp/client';
 import { hasSavedCredentials, restoreSessionFromDb } from '../whatsapp/sessionStore';
 import { requireAuth, AuthRequest } from '../middleware/auth';
+import { prisma } from '../prisma';
 
-const prisma = new PrismaClient();
 export const whatsappRouter = Router();
 
 // Todas as rotas de WhatsApp exigem autenticação do usuário

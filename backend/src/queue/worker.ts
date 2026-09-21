@@ -6,8 +6,8 @@ import { MessageJobData } from './messageQueue';
 import { getWASocket, isWhatsAppConnected } from '../whatsapp/client';
 import { randomizeImageBuffer } from '../services/campaignService';
 import { logger } from '../index';
+import { prisma } from '../prisma';
 
-const prisma = new PrismaClient();
 let globalIo: SocketIOServer | null = null;
 
 /**

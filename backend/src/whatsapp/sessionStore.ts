@@ -1,9 +1,7 @@
-import { PrismaClient } from '@prisma/client';
 import fs from 'fs';
 import path from 'path';
 import { logger } from '../index';
-
-const prisma = new PrismaClient();
+import { prisma } from '../prisma';
 
 /**
  * Salva ou atualiza uma chave de sessão individual no Supabase.

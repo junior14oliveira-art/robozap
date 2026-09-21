@@ -1,9 +1,8 @@
 import { Router, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
 import { requireAuth, AuthRequest } from '../middleware/auth';
 import { normalizePhone } from '../services/spreadsheetService';
+import { prisma } from '../prisma';
 
-const prisma = new PrismaClient();
 export const contactRouter = Router();
 
 // Todas as rotas de contatos exigem autenticação

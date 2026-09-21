@@ -14,7 +14,7 @@ import { getWASocket, isWhatsAppConnected } from '../whatsapp/client';
 import { requireAuth, AuthRequest } from '../middleware/auth';
 import { logger } from '../index';
 
-const prisma = new PrismaClient();
+import { prisma } from '../prisma';
 export const campaignRouter = Router();
 
 // Todas as rotas de campanhas exigem autenticação

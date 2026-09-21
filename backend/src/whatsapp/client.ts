@@ -13,14 +13,12 @@ import fs from 'fs';
 import { Server as SocketIOServer } from 'socket.io';
 import QRCode from 'qrcode';
 import { logger } from '../index';
-import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma';
 import {
   restoreSessionFromDb,
   syncSessionFilesToDb,
   clearAllAuthKeysFromDb,
 } from './sessionStore';
-
-const prisma = new PrismaClient();
 
 interface UserSessionState {
   socket: WASocket | null;
