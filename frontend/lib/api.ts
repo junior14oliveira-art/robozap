@@ -78,42 +78,78 @@ export async function apiFetch<T>(
   return res.json() as Promise<T>;
 }
 
-/** Multipart form upload helper */
+/** Multipart form upload helper with retry capability and cold-start tolerance */
 export async function apiUpload<T>(
   path: string,
-  formData: FormData
+  formDataOrFactory: FormData | (() => FormData),
+  options?: {
+    maxRetries?: number;
+    onProgress?: (message: string) => void;
+  }
 ): Promise<T> {
   const token = getAuthToken();
   const headers: Record<string, string> = {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 
-  try {
-    const res = await fetch(`${API_URL}${path}`, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
+  const maxRetries = options?.maxRetries ?? 3;
+  let lastError: any = null;
 
-    if (res.status === 401 && typeof window !== 'undefined') {
-      const isAuthPage = window.location.pathname === '/login' || window.location.pathname === '/register';
-      if (!isAuthPage) {
-        removeAuthToken();
-        window.location.href = '/login';
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (attempt > 0 && options?.onProgress) {
+        options.onProgress(`Conectando ao servidor (tentativa ${attempt}/${maxRetries})...`);
       }
-    }
 
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(body.error || `Erro HTTP ${res.status} ao enviar imagem.`);
-    }
+      // Generate fresh FormData if factory provided to avoid exhausted streams
+      const body = typeof formDataOrFactory === 'function' ? formDataOrFactory() : formDataOrFactory;
 
-    return res.json() as Promise<T>;
-  } catch (err: any) {
-    if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
-      throw new Error('Falha ao enviar a foto. O servidor pode estar reconectando, tente novamente em instantes.');
+      const res = await fetch(`${API_URL}${path}`, {
+        method: 'POST',
+        headers,
+        body,
+      });
+
+      if (res.status === 401 && typeof window !== 'undefined') {
+        const isAuthPage = window.location.pathname === '/login' || window.location.pathname === '/register';
+        if (!isAuthPage) {
+          removeAuthToken();
+          window.location.href = '/login';
+        }
+      }
+
+      // Render cold-start codes: 502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout
+      if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < maxRetries) {
+        if (options?.onProgress) {
+          options.onProgress('Servidor iniciando... Aguarde alguns instantes.');
+        }
+        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+        continue;
+      }
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(body.error || `Erro HTTP ${res.status} ao enviar imagem.`);
+      }
+
+      return res.json() as Promise<T>;
+    } catch (err: any) {
+      lastError = err;
+      const isNetworkErr = err.message === 'Failed to fetch' || err.name === 'TypeError';
+      if (isNetworkErr && attempt < maxRetries) {
+        if (options?.onProgress) {
+          options.onProgress('Aguardando servidor acordar... Tentando novamente em instantes.');
+        }
+        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+        continue;
+      }
+      if (isNetworkErr) {
+        throw new Error('Falha ao enviar a foto. O servidor demorou para responder ou está reconectando. Clique em "Tentar novamente".');
+      }
+      throw err;
     }
-    throw err;
   }
+
+  throw lastError || new Error('Falha ao enviar a imagem após tentativas.');
 }
 

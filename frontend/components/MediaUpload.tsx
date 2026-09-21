@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Image as ImageIcon, X, Upload, ShieldCheck, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Image as ImageIcon, X, ShieldCheck, CheckCircle2, AlertCircle, RotateCcw } from 'lucide-react';
 import { apiUpload, API_URL } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -21,7 +21,37 @@ interface MediaUploadProps {
 
 export function MediaUpload({ media, onMediaSelected }: MediaUploadProps) {
   const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+  const [lastFile, setLastFile] = useState<File | null>(null);
+
+  const performUpload = async (file: File) => {
+    setUploading(true);
+    setError(null);
+    setUploadStatus('Enviando foto...');
+
+    try {
+      const result = await apiUpload<UploadedMedia>(
+        '/api/upload/media',
+        () => {
+          const fd = new FormData();
+          fd.append('media', file);
+          return fd;
+        },
+        {
+          maxRetries: 3,
+          onProgress: (msg) => setUploadStatus(msg),
+        }
+      );
+      onMediaSelected(result);
+      setLastFile(null);
+    } catch (err: any) {
+      setError(err.message || 'Erro ao enviar a imagem.');
+    } finally {
+      setUploading(false);
+      setUploadStatus('');
+    }
+  };
 
   const onDrop = useCallback(
     async (acceptedFiles: File[], fileRejections: any[]) => {
@@ -39,20 +69,8 @@ export function MediaUpload({ media, onMediaSelected }: MediaUploadProps) {
       const file = acceptedFiles[0];
       if (!file) return;
 
-      setUploading(true);
-      setError(null);
-
-      try {
-        const formData = new FormData();
-        formData.append('media', file);
-
-        const result = await apiUpload<UploadedMedia>('/api/upload/media', formData);
-        onMediaSelected(result);
-      } catch (err: any) {
-        setError(err.message || 'Erro ao enviar a imagem. Tente novamente.');
-      } finally {
-        setUploading(false);
-      }
+      setLastFile(file);
+      await performUpload(file);
     },
     [onMediaSelected]
   );
@@ -70,6 +88,13 @@ export function MediaUpload({ media, onMediaSelected }: MediaUploadProps) {
   const handleRemove = () => {
     onMediaSelected(null);
     setError(null);
+    setLastFile(null);
+  };
+
+  const handleRetry = async () => {
+    if (lastFile) {
+      await performUpload(lastFile);
+    }
   };
 
   const getMediaUrl = (url: string) => {
@@ -128,7 +153,7 @@ export function MediaUpload({ media, onMediaSelected }: MediaUploadProps) {
           isDragActive
             ? 'border-whatsapp bg-whatsapp/10'
             : 'border-border bg-secondary/20 hover:border-whatsapp/50 hover:bg-secondary/40',
-          uploading && 'opacity-50 cursor-not-allowed'
+          uploading && 'opacity-60 cursor-not-allowed'
         )}
       >
         <input {...getInputProps()} />
@@ -142,17 +167,47 @@ export function MediaUpload({ media, onMediaSelected }: MediaUploadProps) {
         </div>
 
         <p className="text-xs font-semibold text-foreground">
-          {uploading ? 'Enviando foto...' : isDragActive ? 'Solte a foto aqui' : 'Anexar Foto à Campanha (Opcional)'}
+          {uploading
+            ? uploadStatus || 'Enviando foto...'
+            : isDragActive
+            ? 'Solte a foto aqui'
+            : 'Anexar Foto à Campanha (Opcional)'}
         </p>
         <p className="text-[11px] text-muted-foreground mt-0.5">
-          JPG, PNG ou WEBP até 16MB · O texto da mensagem será enviado como legenda da foto
+          {uploading
+            ? 'Aguarde o processamento seguro...'
+            : 'JPG, PNG ou WEBP até 16MB · O texto da mensagem será enviado como legenda da foto'}
         </p>
       </div>
 
       {error && (
-        <div className="flex items-center gap-1.5 text-xs text-destructive">
-          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-          <span>{error}</span>
+        <div className="flex flex-col gap-2 p-3 rounded-xl border border-destructive/30 bg-destructive/10 text-destructive text-xs animate-slide-up">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+            <span className="flex-1">{error}</span>
+          </div>
+          {lastFile && !uploading && (
+            <div className="flex items-center gap-2 pt-1 border-t border-destructive/20 justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setLastFile(null);
+                }}
+                className="px-2 py-1 text-xs rounded hover:bg-destructive/10 transition-colors text-muted-foreground"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleRetry}
+                className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-lg bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors shadow-sm"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Tentar novamente ({lastFile.name})
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

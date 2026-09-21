@@ -1,17 +1,44 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { Sidebar } from '@/components/Sidebar';
 import { WhatsAppStatusBanner } from '@/components/WhatsAppStatusBanner';
 import { Toaster } from '@/components/ui/toaster';
 import { Loader2 } from 'lucide-react';
+import { API_URL } from '@/lib/api';
 
 function AppContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, loading } = useAuth();
   const isAuthPage = pathname === '/login' || pathname === '/register';
+
+  // Keep-alive anti cold-start ping para manter o backend no Render sempre acordado
+  useEffect(() => {
+    const pingBackend = () => {
+      fetch(`${API_URL}/health`, { method: 'GET', cache: 'no-store' }).catch(() => {
+        // Ignora silenciosamente erros em segundo plano
+      });
+    };
+
+    // Ping inicial ao carregar a página
+    pingBackend();
+
+    // Ping a cada 3 minutos (Render desliga com 15 minutos de inatividade)
+    const intervalId = setInterval(pingBackend, 3 * 60 * 1000);
+
+    // Ping quando o usuário volta o foco para a aba do navegador
+    const onFocus = () => {
+      pingBackend();
+    };
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      clearInterval(intervalId);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
 
   if (loading) {
     return (

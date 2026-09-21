@@ -62,9 +62,6 @@ export function useWhatsAppStatus() {
   useEffect(() => {
     fetchStatus();
 
-    // Sincronização periódica a cada 3.5 segundos
-    const interval = setInterval(fetchStatus, 3500);
-
     const socket = getSocket();
 
     const onStatus = (data: WhatsAppStatus) => {
@@ -79,15 +76,25 @@ export function useWhatsAppStatus() {
       setWaStatus({ status: 'qr_ready', message: 'Escaneie o QR Code para conectar' });
     };
 
+    const onConnect = () => {
+      fetchStatus();
+    };
+
+    socket.on('connect', onConnect);
     socket.on('whatsapp:status', onStatus);
     socket.on('whatsapp:qr', onQr);
 
+    // Polling inteligente: 12 segundos se não estiver conectado, 30 segundos quando conectado
+    const pollTime = waStatus.status === 'connected' ? 30000 : 12000;
+    const interval = setInterval(fetchStatus, pollTime);
+
     return () => {
       clearInterval(interval);
+      socket.off('connect', onConnect);
       socket.off('whatsapp:status', onStatus);
       socket.off('whatsapp:qr', onQr);
     };
-  }, [fetchStatus]);
+  }, [fetchStatus, waStatus.status]);
 
   return { waStatus, qrCode, refreshStatus: fetchStatus };
 }
