@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { Image as ImageIcon, X, ShieldCheck, CheckCircle2, AlertCircle, RotateCcw } from 'lucide-react';
-import { apiUpload, API_URL } from '@/lib/api';
+import { apiUpload, BACKEND_URL } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 export interface UploadedMedia {
@@ -99,7 +99,7 @@ export function MediaUpload({ media, onMediaSelected }: MediaUploadProps) {
 
   const getMediaUrl = (url: string) => {
     if (url.startsWith('http')) return url;
-    return `${API_URL}${url}`;
+    return `${BACKEND_URL}${url}`;
   };
 
   if (media) {

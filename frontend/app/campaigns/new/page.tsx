@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { SpreadsheetUpload, type SpreadsheetData } from '@/components/SpreadsheetUpload';
 import { MediaUpload, type UploadedMedia } from '@/components/MediaUpload';
-import { apiFetch, API_URL } from '@/lib/api';
+import { apiFetch, BACKEND_URL } from '@/lib/api';
 import { useToast } from '@/components/ui/use-toast';
 import { useWhatsAppStatus } from '@/hooks/useWhatsAppStatus';
 import { cn } from '@/lib/utils';
@@ -750,7 +750,7 @@ export default function NewCampaignPage() {
                   {uploadedMedia && (
                     <div className="relative overflow-hidden rounded-xl bg-black/60 max-h-56">
                       <img
-                        src={uploadedMedia.url.startsWith('http') ? uploadedMedia.url : `${API_URL}${uploadedMedia.url}`}
+                        src={uploadedMedia.url.startsWith('http') ? uploadedMedia.url : `${BACKEND_URL}${uploadedMedia.url}`}
                         alt="Anexo da mensagem"
                         className="w-full object-cover rounded-lg"
                       />

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { getSocket } from '@/lib/socket';
-import { API_URL, getAuthToken } from '@/lib/api';
+import { getAuthToken } from '@/lib/api';
 
 export interface WhatsAppStatus {
   status: 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
@@ -26,7 +26,7 @@ export function useWhatsAppStatus() {
     }
 
     try {
-      const res = await fetch(`${API_URL}/api/whatsapp/status`, {
+      const res = await fetch('/api/whatsapp/status', {
         cache: 'no-store',
         headers: {
           Authorization: `Bearer ${token}`,

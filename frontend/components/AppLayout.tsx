@@ -7,7 +7,6 @@ import { Sidebar } from '@/components/Sidebar';
 import { WhatsAppStatusBanner } from '@/components/WhatsAppStatusBanner';
 import { Toaster } from '@/components/ui/toaster';
 import { Loader2 } from 'lucide-react';
-import { API_URL } from '@/lib/api';
 
 function AppContent({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -17,7 +16,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
   // Keep-alive anti cold-start ping para manter o backend no Render sempre acordado
   useEffect(() => {
     const pingBackend = () => {
-      fetch(`${API_URL}/health`, { method: 'GET', cache: 'no-store' }).catch(() => {
+      fetch('/health', { method: 'GET', cache: 'no-store' }).catch(() => {
         // Ignora silenciosamente erros em segundo plano
       });
     };

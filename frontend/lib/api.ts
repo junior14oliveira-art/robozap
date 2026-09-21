@@ -7,7 +7,19 @@ function formatApiUrl(raw?: string): string {
   return `https://${trimmed.replace(/\/+$/, '')}`;
 }
 
-export const API_URL = formatApiUrl(process.env.NEXT_PUBLIC_API_URL);
+/** URL absoluta do backend — usar SOMENTE para Socket.io e exibição de imagens */
+export const BACKEND_URL = formatApiUrl(process.env.NEXT_PUBLIC_API_URL);
+
+/**
+ * URL base para chamadas HTTP (apiFetch, apiUpload, fetch manual).
+ * No navegador em produção, usa string vazia → requisições relativas (/api/...)
+ * que passam pelo proxy Next.js rewrites, eliminando CORS completamente.
+ * No SSR ou em dev local (sem NEXT_PUBLIC_API_URL), usa a URL absoluta.
+ */
+export const API_URL =
+  typeof window !== 'undefined' && process.env.NEXT_PUBLIC_API_URL
+    ? ''
+    : formatApiUrl(process.env.NEXT_PUBLIC_API_URL);
 
 export function getAuthToken(): string | null {
   if (typeof window === 'undefined') return null;
