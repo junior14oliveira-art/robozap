@@ -351,6 +351,15 @@ export default function NewCampaignPage() {
       return;
     }
 
+    if (!isConnected) {
+      toast({
+        title: 'WhatsApp Desconectado',
+        description: 'Conecte seu WhatsApp via QR Code antes de iniciar os disparos.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setSubmitting(true);
     try {
       const res = await apiFetch<{ campaign: { id: string } }>('/api/campaigns', {
@@ -1005,24 +1014,34 @@ export default function NewCampaignPage() {
               >
                 Voltar e Editar
               </button>
-              <button
-                type="submit"
-                disabled={submitting || !spreadsheetData.hasPhoneColumn || effectiveToSend === 0}
-                className="flex items-center gap-2 rounded-xl bg-whatsapp px-7 py-3 text-sm font-bold text-white hover:bg-whatsapp-dark transition-all shadow-lg shadow-whatsapp/25 disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02]"
-              >
-                {submitting ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Send className="h-4 w-4" />
-                )}
-                {submitting
-                  ? 'Iniciando Fila...'
-                  : effectiveToSend === 0
-                  ? 'Todos os contatos já foram abordados (marque Reenviar para disparar)'
-                  : allowResend || !contactAnalysis?.alreadyContactedCount
-                  ? `Disparar ${spreadsheetData.contacts.length} Mensagens ${uploadedMedia ? 'com Foto' : ''}`
-                  : `Disparar ${effectiveToSend} Novas Mensagens (${contactAnalysis.alreadyContactedCount} preservados) ${uploadedMedia ? 'com Foto' : ''}`}
-              </button>
+              {!isConnected ? (
+                <Link
+                  href="/connect"
+                  className="flex items-center gap-2 rounded-xl bg-yellow-500 hover:bg-yellow-600 px-7 py-3 text-sm font-bold text-black transition-all shadow-lg shadow-yellow-500/25 hover:scale-[1.02]"
+                >
+                  <AlertTriangle className="h-4 w-4" />
+                  Conectar WhatsApp para Disparar
+                </Link>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={submitting || !spreadsheetData.hasPhoneColumn || effectiveToSend === 0}
+                  className="flex items-center gap-2 rounded-xl bg-whatsapp px-7 py-3 text-sm font-bold text-white hover:bg-whatsapp-dark transition-all shadow-lg shadow-whatsapp/25 disabled:opacity-50 disabled:cursor-not-allowed hover:scale-[1.02]"
+                >
+                  {submitting ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Send className="h-4 w-4" />
+                  )}
+                  {submitting
+                    ? 'Iniciando Fila...'
+                    : effectiveToSend === 0
+                    ? 'Todos os contatos já foram abordados (marque Reenviar para disparar)'
+                    : allowResend || !contactAnalysis?.alreadyContactedCount
+                    ? `Disparar ${spreadsheetData.contacts.length} Mensagens ${uploadedMedia ? 'com Foto' : ''}`
+                    : `Disparar ${effectiveToSend} Novas Mensagens (${contactAnalysis.alreadyContactedCount} preservados) ${uploadedMedia ? 'com Foto' : ''}`}
+                </button>
+              )}
             </div>
           </div>
         )}

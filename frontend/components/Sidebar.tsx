@@ -89,23 +89,29 @@ export function Sidebar() {
 
       {/* WhatsApp Status Indicator */}
       <div className="border-t border-border p-4 space-y-3">
-        <div className="flex items-center gap-3 rounded-lg bg-secondary/50 px-3 py-2.5">
+        <Link
+          href="/connect"
+          className="flex items-center gap-3 rounded-lg bg-secondary/50 px-3 py-2.5 transition hover:bg-secondary/80 group"
+          title={waStatus.status === 'connected' ? 'WhatsApp conectado' : 'Clique para conectar ou ver QR Code'}
+        >
           <div className={cn('h-2.5 w-2.5 rounded-full shrink-0', statusColor)} />
           <div className="min-w-0 flex-1">
-            <p className="text-xs font-medium text-foreground">
+            <p className="text-xs font-medium text-foreground group-hover:text-whatsapp transition">
               {waStatus.status === 'connected'
                 ? 'WhatsApp Conectado'
                 : waStatus.status === 'qr_ready'
                 ? 'Aguardando QR Code'
                 : waStatus.status === 'connecting'
-                ? 'Conectando...'
-                : 'Desconectado'}
+                ? 'Reconectando...'
+                : 'Desconectado (Conectar)'}
             </p>
-            {waStatus.phone && (
+            {waStatus.phone ? (
               <p className="truncate text-xs text-muted-foreground">{waStatus.phone}</p>
-            )}
+            ) : waStatus.status === 'disconnected' ? (
+              <p className="truncate text-[10px] text-yellow-400">Clique para conectar</p>
+            ) : null}
           </div>
-        </div>
+        </Link>
 
         {/* User Profile Card & Logout */}
         {user && (

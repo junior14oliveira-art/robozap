@@ -194,6 +194,12 @@ campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
     return res.status(400).json({ error: 'A lista de contatos está vazia.' });
   }
 
+  if (!isWhatsAppConnected(userId)) {
+    return res.status(400).json({
+      error: 'WhatsApp não está conectado. Conecte seu aparelho via QR Code antes de disparar a campanha.',
+    });
+  }
+
   // 1. De-duplicação na lista enviada
   const seenPhones = new Set<string>();
   const deduplicatedContacts: any[] = [];

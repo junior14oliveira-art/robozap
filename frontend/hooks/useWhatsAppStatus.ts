@@ -51,9 +51,9 @@ export function useWhatsAppStatus() {
       } else {
         const isConn = data.status === 'connecting';
         setWaStatus({
-          status: (data.status as WhatsAppStatus['status']) || 'disconnected',
-          phone: data.phone,
-          message: isConn ? 'Aguardando conexão...' : 'Desconectado',
+          status: isConn ? 'connecting' : 'disconnected',
+          phone: isConn ? data.phone : undefined,
+          message: isConn ? 'Reconectando ao WhatsApp...' : 'Desconectado',
         });
       }
     } catch (_) {}

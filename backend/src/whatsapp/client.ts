@@ -14,6 +14,11 @@ import { Server as SocketIOServer } from 'socket.io';
 import QRCode from 'qrcode';
 import { logger } from '../index';
 import { PrismaClient } from '@prisma/client';
+import {
+  restoreSessionFromDb,
+  syncSessionFilesToDb,
+  clearAllAuthKeysFromDb,
+} from './sessionStore';
 
 const prisma = new PrismaClient();
 
@@ -43,7 +48,7 @@ function getSession(userId: string): UserSessionState {
 
 const BASE_SESSION_DIR = path.resolve(process.env.SESSION_DIR || './sessions');
 
-function getUserSessionDir(userId: string): string {
+export function getUserSessionDir(userId: string): string {
   // Limpa caracteres especiais do userId para o sistema de arquivos
   const safeId = userId.replace(/[^a-zA-Z0-9_-]/g, '_');
   return path.join(BASE_SESSION_DIR, safeId);
@@ -124,7 +129,16 @@ export async function initWhatsAppClient(
     fs.mkdirSync(userDir, { recursive: true });
   }
 
-  const { state, saveCreds } = await useMultiFileAuthState(userDir);
+  // Restaura credenciais do Supabase caso o disco tenha sido limpo (ex: reinício/sleep do Render)
+  if (!fs.existsSync(path.join(userDir, 'creds.json'))) {
+    await restoreSessionFromDb(userId, userDir);
+  }
+
+  const { state, saveCreds: baseSaveCreds } = await useMultiFileAuthState(userDir);
+  const saveCreds = async () => {
+    await baseSaveCreds();
+    syncSessionFilesToDb(userId, userDir).catch(() => {});
+  };
   const { version } = await fetchLatestBaileysVersion();
 
   logger.info({ userId, version }, '📱 Initializing Baileys WhatsApp client for user');
@@ -181,6 +195,9 @@ export async function initWhatsAppClient(
       session.currentQrCode = null;
       const phone = sock.user?.id?.split(':')[0] || 'unknown';
       logger.info({ userId, phone }, '✅ WhatsApp connected successfully for user!');
+
+      // Sincroniza credenciais válidas e chaves com o Supabase
+      syncSessionFilesToDb(userId, userDir).catch(() => {});
 
       emitToUser(io, userId, 'whatsapp:status', {
         status: 'connected',
@@ -338,24 +355,42 @@ function clearUserSession(userId: string): void {
     fs.rmSync(dir, { recursive: true, force: true });
     logger.info({ userId, dir }, 'User session directory cleared');
   }
+  clearAllAuthKeysFromDb(userId).catch(() => {});
 }
 
 /**
- * Restaura automaticamente todas as sessões que estavam ativas no banco
+ * Restaura automaticamente todas as sessões que estavam ativas no banco ou com credenciais salvas
  */
 export async function restoreAllActiveSessions(io: SocketIOServer): Promise<void> {
   try {
-    const activeSessions = await prisma.whatsAppSession.findMany({
-      where: { status: 'connected' },
+    const sessionsWithCreds = await prisma.whatsAppAuthKey.findMany({
+      where: { key: 'creds.json' },
+      select: { userId: true },
     });
+    const userIds = new Set(sessionsWithCreds.map((s) => s.userId));
 
-    for (const s of activeSessions) {
-      const dir = getUserSessionDir(s.userId);
-      if (fs.existsSync(dir) && fs.readdirSync(dir).length > 0) {
-        logger.info({ userId: s.userId }, 'Restaurando sessão persistida do WhatsApp...');
-        initWhatsAppClient(io, s.userId).catch((err) => {
-          logger.warn({ userId: s.userId, err: err.message }, 'Falha ao restaurar sessão');
+    const activeDbSessions = await prisma.whatsAppSession.findMany({
+      where: { status: 'connected' },
+      select: { userId: true },
+    });
+    activeDbSessions.forEach((s) => userIds.add(s.userId));
+
+    for (const userId of userIds) {
+      const dir = getUserSessionDir(userId);
+      const restored = await restoreSessionFromDb(userId, dir);
+      const hasLocalCreds = fs.existsSync(path.join(dir, 'creds.json'));
+
+      if (restored || hasLocalCreds) {
+        logger.info({ userId }, '🔄 Restaurando sessão persistida do WhatsApp...');
+        initWhatsAppClient(io, userId).catch((err) => {
+          logger.warn({ userId, err: err.message }, 'Falha ao restaurar sessão');
         });
+      } else {
+        await prisma.whatsAppSession.upsert({
+          where: { userId },
+          create: { userId, status: 'disconnected', phone: null },
+          update: { status: 'disconnected', phone: null },
+        }).catch(() => {});
       }
     }
   } catch (err: any) {

@@ -25,6 +25,27 @@ export function removeAuthToken(): void {
   localStorage.removeItem('robozap_user');
 }
 
+async function fetchWithRetry(url: string, init?: RequestInit, maxRetries = 2): Promise<Response> {
+  let lastError: any = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      if ((res.status === 502 || res.status === 503 || res.status === 504) && attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        continue;
+      }
+      return res;
+    } catch (err: any) {
+      lastError = err;
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        continue;
+      }
+    }
+  }
+  throw lastError || new Error('Falha de conexão com o servidor. Aguarde alguns segundos.');
+}
+
 export async function apiFetch<T>(
   path: string,
   options?: RequestInit
@@ -36,7 +57,7 @@ export async function apiFetch<T>(
     ...(options?.headers as Record<string, string>),
   };
 
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetchWithRetry(`${API_URL}${path}`, {
     ...options,
     headers,
   });
@@ -67,7 +88,7 @@ export async function apiUpload<T>(
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetchWithRetry(`${API_URL}${path}`, {
     method: 'POST',
     headers,
     body: formData,
@@ -88,3 +109,4 @@ export async function apiUpload<T>(
 
   return res.json() as Promise<T>;
 }
+
