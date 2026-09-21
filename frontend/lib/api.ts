@@ -88,25 +88,32 @@ export async function apiUpload<T>(
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 
-  const res = await fetchWithRetry(`${API_URL}${path}`, {
-    method: 'POST',
-    headers,
-    body: formData,
-  });
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
 
-  if (res.status === 401 && typeof window !== 'undefined') {
-    const isAuthPage = window.location.pathname === '/login' || window.location.pathname === '/register';
-    if (!isAuthPage) {
-      removeAuthToken();
-      window.location.href = '/login';
+    if (res.status === 401 && typeof window !== 'undefined') {
+      const isAuthPage = window.location.pathname === '/login' || window.location.pathname === '/register';
+      if (!isAuthPage) {
+        removeAuthToken();
+        window.location.href = '/login';
+      }
     }
-  }
 
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error || `HTTP ${res.status}`);
-  }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error || `Erro HTTP ${res.status} ao enviar imagem.`);
+    }
 
-  return res.json() as Promise<T>;
+    return res.json() as Promise<T>;
+  } catch (err: any) {
+    if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
+      throw new Error('Falha ao enviar a foto. O servidor pode estar reconectando, tente novamente em instantes.');
+    }
+    throw err;
+  }
 }
 

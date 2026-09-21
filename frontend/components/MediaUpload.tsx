@@ -24,7 +24,18 @@ export function MediaUpload({ media, onMediaSelected }: MediaUploadProps) {
   const [error, setError] = useState<string | null>(null);
 
   const onDrop = useCallback(
-    async (acceptedFiles: File[]) => {
+    async (acceptedFiles: File[], fileRejections: any[]) => {
+      if (fileRejections && fileRejections.length > 0) {
+        const rej = fileRejections[0];
+        const isTooLarge = rej?.errors?.some((e: any) => e.code === 'file-too-large');
+        setError(
+          isTooLarge
+            ? 'A imagem excede o tamanho limite de 16MB. Por favor envie uma imagem menor.'
+            : 'Formato de imagem inválido. Suportados: JPG, JPEG, PNG, WEBP.'
+        );
+        return;
+      }
+
       const file = acceptedFiles[0];
       if (!file) return;
 
@@ -38,7 +49,7 @@ export function MediaUpload({ media, onMediaSelected }: MediaUploadProps) {
         const result = await apiUpload<UploadedMedia>('/api/upload/media', formData);
         onMediaSelected(result);
       } catch (err: any) {
-        setError(err.message || 'Erro ao enviar a imagem.');
+        setError(err.message || 'Erro ao enviar a imagem. Tente novamente.');
       } finally {
         setUploading(false);
       }
@@ -49,9 +60,7 @@ export function MediaUpload({ media, onMediaSelected }: MediaUploadProps) {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
-      'image/jpeg': ['.jpg', '.jpeg'],
-      'image/png': ['.png'],
-      'image/webp': ['.webp'],
+      'image/*': ['.jpg', '.jpeg', '.png', '.webp', '.jfif'],
     },
     maxFiles: 1,
     maxSize: 16 * 1024 * 1024,

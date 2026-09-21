@@ -48,12 +48,12 @@ const mediaStorage = multer.diskStorage({
 });
 
 const mediaFilter = (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
-  const allowed = ['.jpg', '.jpeg', '.png', '.webp'];
+  const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.jfif'];
   const ext = path.extname(file.originalname).toLowerCase();
-  if (allowed.includes(ext)) {
+  if (allowed.includes(ext) || (file.mimetype && file.mimetype.startsWith('image/'))) {
     cb(null, true);
   } else {
-    cb(new Error('Formato de imagem inválido. Suportados: JPG, JPEG, PNG, WEBP'));
+    cb(new Error('Formato de imagem inválido. Suportados: JPG, JPEG, PNG, WEBP.'));
   }
 };
 
@@ -71,46 +71,63 @@ uploadRouter.use(requireAuth);
  * POST /api/upload/spreadsheet
  * Upload e processamento de planilhas Excel / CSV.
  */
-uploadRouter.post('/spreadsheet', uploadSpreadsheet.single('file'), async (req: Request, res: Response) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
-  }
-
-  try {
-    const phoneColumn = req.body.phoneColumn ? String(req.body.phoneColumn) : undefined;
-    const nameColumn = req.body.nameColumn ? String(req.body.nameColumn) : undefined;
-
-    const result = await parseSpreadsheet(req.file.path, { phoneColumn, nameColumn });
-
-    return res.json({
-      filename: req.file.originalname,
-      filePath: req.file.path,
-      ...result,
-    });
-  } catch (error: any) {
-    if (req.file && fs.existsSync(req.file.path)) {
-      try { fs.unlinkSync(req.file.path); } catch (_) {}
+uploadRouter.post('/spreadsheet', (req: Request, res: Response) => {
+  uploadSpreadsheet.single('file')(req, res, async (err: any) => {
+    if (err) {
+      return res.status(400).json({ error: err.message || 'Erro ao carregar planilha.' });
     }
-    return res.status(422).json({ error: error.message });
-  }
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhum arquivo enviado.' });
+    }
+
+    try {
+      const phoneColumn = req.body.phoneColumn ? String(req.body.phoneColumn) : undefined;
+      const nameColumn = req.body.nameColumn ? String(req.body.nameColumn) : undefined;
+
+      const result = await parseSpreadsheet(req.file.path, { phoneColumn, nameColumn });
+
+      return res.json({
+        filename: req.file.originalname,
+        filePath: req.file.path,
+        ...result,
+      });
+    } catch (error: any) {
+      if (req.file && fs.existsSync(req.file.path)) {
+        try { fs.unlinkSync(req.file.path); } catch (_) {}
+      }
+      return res.status(422).json({ error: error.message });
+    }
+  });
 });
 
 /**
  * POST /api/upload/media
  * Upload de fotos/imagens para campanhas.
  */
-uploadRouter.post('/media', uploadMedia.single('media'), async (req: Request, res: Response) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'Nenhuma foto ou imagem enviada.' });
-  }
+uploadRouter.post('/media', (req: Request, res: Response) => {
+  uploadMedia.single('media')(req, res, (err: any) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({ error: 'A foto excede o limite máximo permitido de 16MB.' });
+        }
+        return res.status(400).json({ error: `Erro no upload: ${err.message}` });
+      }
+      return res.status(400).json({ error: err.message || 'Formato de foto inválido.' });
+    }
 
-  const relativeUrl = `/uploads/media/${path.basename(req.file.path)}`;
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhuma foto ou imagem enviada.' });
+    }
 
-  return res.json({
-    filename: req.file.originalname,
-    filePath: req.file.path,
-    url: relativeUrl,
-    mimetype: req.file.mimetype,
-    size: req.file.size,
+    const relativeUrl = `/uploads/media/${path.basename(req.file.path)}`;
+
+    return res.json({
+      filename: req.file.originalname,
+      filePath: req.file.path,
+      url: relativeUrl,
+      mimetype: req.file.mimetype,
+      size: req.file.size,
+    });
   });
 });
