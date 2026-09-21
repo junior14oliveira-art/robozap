@@ -17,8 +17,7 @@ export function errorHandler(
 
   // Default
   res.status(500).json({
-    error: process.env.NODE_ENV === 'production'
-      ? 'Erro interno do servidor.'
-      : err.message,
+    error: err.message || 'Erro interno do servidor.',
+    details: process.env.NODE_ENV === 'production' ? undefined : err.stack,
   });
 }
