@@ -12,6 +12,7 @@ import { processTemplate, randomizeImageBuffer } from '../services/campaignServi
 import { normalizePhone } from '../services/spreadsheetService';
 import { getWASocket, isWhatsAppConnected } from '../whatsapp/client';
 import { requireAuth, AuthRequest } from '../middleware/auth';
+import { logger } from '../index';
 
 const prisma = new PrismaClient();
 export const campaignRouter = Router();
@@ -57,6 +58,88 @@ campaignRouter.get('/:id', async (req: AuthRequest, res: Response) => {
 });
 
 /**
+ * Salva e sincroniza contatos em lotes pequenos para evitar estourar o pool de conexões do Supabase.
+ */
+async function batchUpsertSavedContacts(userId: string, contacts: any[]): Promise<void> {
+  const CHUNK_SIZE = 5;
+  for (let i = 0; i < contacts.length; i += CHUNK_SIZE) {
+    const chunk = contacts.slice(i, i + CHUNK_SIZE);
+    await Promise.all(
+      chunk.map((c) =>
+        prisma.savedContact.upsert({
+          where: {
+            userId_phone: {
+              userId,
+              phone: c.phone,
+            },
+          },
+          create: {
+            userId,
+            phone: c.phone,
+            name: c.name || null,
+            company: c.company || null,
+            variables: JSON.stringify(c),
+          },
+          update: {
+            name: c.name || undefined,
+            company: c.company || undefined,
+            variables: JSON.stringify(c),
+          },
+        })
+      )
+    );
+  }
+}
+
+/**
+ * Cria registros de contatos de uma campanha em lotes pequenos.
+ */
+async function batchCreateContacts(
+  campaignId: string,
+  contacts: any[],
+  optOutSet: Set<string>,
+  alreadySentSet: Set<string>,
+  allowResend: boolean
+): Promise<any[]> {
+  const results: any[] = [];
+  const CHUNK_SIZE = 5;
+
+  for (let i = 0; i < contacts.length; i += CHUNK_SIZE) {
+    const chunk = contacts.slice(i, i + CHUNK_SIZE);
+    const chunkResults = await Promise.all(
+      chunk.map((c: Record<string, string>) => {
+        const isBlacklisted = optOutSet.has(c.phone);
+        const isAlreadyContacted = !allowResend && alreadySentSet.has(c.phone);
+
+        let status = 'pending';
+        let errorMsg: string | null = null;
+
+        if (isBlacklisted) {
+          status = 'opted_out';
+          errorMsg = 'Opt-Out (solicitou SAIR)';
+        } else if (isAlreadyContacted) {
+          status = 'skipped';
+          errorMsg = 'Já contatado anteriormente (reenvio desabilitado)';
+        }
+
+        return prisma.contact.create({
+          data: {
+            campaignId,
+            phone: c.phone,
+            name: c.name || null,
+            variables: JSON.stringify(c),
+            status,
+            errorMsg,
+          },
+        });
+      })
+    );
+    results.push(...chunkResults);
+  }
+  return results;
+}
+
+/**
  * POST /api/campaigns/check-contacts
  * Analisa a lista antes do disparo para o usuário logado:
  * 1. Remove contatos com telefones duplicados na lista
@@ -65,194 +148,55 @@ campaignRouter.get('/:id', async (req: AuthRequest, res: Response) => {
  * 4. Identifica contatos na lista de Opt-Out (SAIR)
  */
 campaignRouter.post('/check-contacts', async (req: AuthRequest, res: Response) => {
-  const userId = req.user!.id;
-  const { contacts } = req.body;
-  if (!Array.isArray(contacts) || contacts.length === 0) {
-    return res.json({
-      totalReceived: 0,
-      duplicatesInList: 0,
-      uniqueCount: 0,
-      alreadyContactedCount: 0,
-      alreadyContactedPhones: [],
-      optOutCount: 0,
-      optOutPhones: [],
-      newContactsCount: 0,
-      uniqueContacts: [],
-    });
-  }
-
-  const seen = new Set<string>();
-  const uniqueContacts: any[] = [];
-  let duplicatesCount = 0;
-
-  for (const c of contacts) {
-    const norm = normalizePhone(c.phone);
-    if (!norm) continue;
-    if (seen.has(norm)) {
-      duplicatesCount++;
-    } else {
-      seen.add(norm);
-      uniqueContacts.push({ ...c, phone: norm });
+  try {
+    const userId = req.user!.id;
+    const { contacts } = req.body;
+    if (!Array.isArray(contacts) || contacts.length === 0) {
+      return res.json({
+        totalReceived: 0,
+        duplicatesInList: 0,
+        uniqueCount: 0,
+        alreadyContactedCount: 0,
+        alreadyContactedPhones: [],
+        optOutCount: 0,
+        optOutPhones: [],
+        newContactsCount: 0,
+        uniqueContacts: [],
+      });
     }
-  }
 
-  const allPhones = Array.from(seen);
+    const seen = new Set<string>();
+    const uniqueContacts: any[] = [];
+    let duplicatesCount = 0;
 
-  // Salva no perfil do usuário (SavedContact) para memória permanente do SaaS
-  await Promise.all(
-    uniqueContacts.map((c) =>
-      prisma.savedContact.upsert({
-        where: {
-          userId_phone: {
-            userId,
-            phone: c.phone,
-          },
-        },
-        create: {
-          userId,
-          phone: c.phone,
-          name: c.name || null,
-          company: c.company || null,
-          variables: JSON.stringify(c),
-        },
-        update: {
-          name: c.name || undefined,
-          company: c.company || undefined,
-          variables: JSON.stringify(c),
-        },
-      })
-    )
-  );
-
-  // Consulta Opt-Out do usuário
-  const optOuts = await prisma.optOutContact.findMany({
-    where: {
-      userId,
-      phone: { in: allPhones },
-    },
-    select: { phone: true },
-  });
-  const optOutPhones = optOuts.map((o) => o.phone);
-  const optOutSet = new Set(optOutPhones);
-
-  // Consulta quem já recebeu mensagem com sucesso anteriormente no perfil deste usuário
-  const savedWithSent = await prisma.savedContact.findMany({
-    where: {
-      userId,
-      phone: { in: allPhones },
-      totalSent: { gt: 0 },
-    },
-    select: { phone: true },
-  });
-  const alreadyContactedPhones = savedWithSent.map((s) => s.phone);
-  const alreadyContactedSet = new Set(alreadyContactedPhones);
-
-  const newContactsCount = uniqueContacts.filter(
-    (c) => !optOutSet.has(c.phone) && !alreadyContactedSet.has(c.phone)
-  ).length;
-
-  return res.json({
-    totalReceived: contacts.length,
-    duplicatesInList: duplicatesCount,
-    uniqueCount: uniqueContacts.length,
-    alreadyContactedCount: alreadyContactedPhones.length,
-    alreadyContactedPhones,
-    optOutCount: optOutPhones.length,
-    optOutPhones,
-    newContactsCount,
-    uniqueContacts,
-  });
-});
-
-/**
- * POST /api/campaigns
- * Create and start a new campaign for logged-in user
- */
-campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
-  const userId = req.user!.id;
-  const io = (req as any).io;
-  const {
-    name,
-    contacts,
-    messageTemplate,
-    mediaUrl,
-    mediaType = 'image',
-    delayMin = 15,
-    delayMax = 45,
-    batchSize = 20,
-    batchPauseMin = 3,
-    randomizeMedia = true,
-    optOutFooter = true,
-    allowResend = false,
-  } = req.body;
-
-  if (!name || !contacts || !messageTemplate) {
-    return res.status(400).json({ error: 'name, contacts e messageTemplate são obrigatórios.' });
-  }
-
-  if (!Array.isArray(contacts) || contacts.length === 0) {
-    return res.status(400).json({ error: 'A lista de contatos está vazia.' });
-  }
-
-  if (!isWhatsAppConnected(userId)) {
-    return res.status(400).json({
-      error: 'WhatsApp não está conectado. Conecte seu aparelho via QR Code antes de disparar a campanha.',
-    });
-  }
-
-  // 1. De-duplicação na lista enviada
-  const seenPhones = new Set<string>();
-  const deduplicatedContacts: any[] = [];
-  for (const c of contacts) {
-    const norm = normalizePhone(c.phone);
-    if (!norm) continue;
-    if (!seenPhones.has(norm)) {
-      seenPhones.add(norm);
-      deduplicatedContacts.push({ ...c, phone: norm });
+    for (const c of contacts) {
+      const norm = normalizePhone(c.phone);
+      if (!norm) continue;
+      if (seen.has(norm)) {
+        duplicatesCount++;
+      } else {
+        seen.add(norm);
+        uniqueContacts.push({ ...c, phone: norm });
+      }
     }
-  }
 
-  const allPhones = Array.from(seenPhones);
+    const allPhones = Array.from(seen);
 
-  // 2. Salva e sincroniza contatos no perfil do usuário (SavedContact)
-  await Promise.all(
-    deduplicatedContacts.map((c) =>
-      prisma.savedContact.upsert({
-        where: {
-          userId_phone: {
-            userId,
-            phone: c.phone,
-          },
-        },
-        create: {
-          userId,
-          phone: c.phone,
-          name: c.name || null,
-          company: c.company || null,
-          variables: JSON.stringify(c),
-        },
-        update: {
-          name: c.name || undefined,
-          company: c.company || undefined,
-          variables: JSON.stringify(c),
-        },
-      })
-    )
-  );
+    // Salva no perfil do usuário (SavedContact) em lotes seguros
+    await batchUpsertSavedContacts(userId, uniqueContacts);
 
-  // 3. Consulta lista de Opt-Out do usuário para filtrar preventivamente
-  const optOuts = await prisma.optOutContact.findMany({
-    where: {
-      userId,
-      phone: { in: allPhones },
-    },
-    select: { phone: true },
-  });
-  const optOutSet = new Set(optOuts.map((o) => o.phone));
+    // Consulta Opt-Out do usuário
+    const optOuts = await prisma.optOutContact.findMany({
+      where: {
+        userId,
+        phone: { in: allPhones },
+      },
+      select: { phone: true },
+    });
+    const optOutPhones = optOuts.map((o) => o.phone);
+    const optOutSet = new Set(optOutPhones);
 
-  // 4. Se allowResend for falso, identifica quem já recebeu mensagem antes
-  const alreadySentSet = new Set<string>();
-  if (!allowResend) {
+    // Consulta quem já recebeu mensagem com sucesso anteriormente no perfil deste usuário
     const savedWithSent = await prisma.savedContact.findMany({
       where: {
         userId,
@@ -261,116 +205,212 @@ campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
       },
       select: { phone: true },
     });
-    savedWithSent.forEach((s) => alreadySentSet.add(s.phone));
-  }
+    const alreadyContactedPhones = savedWithSent.map((s) => s.phone);
+    const alreadyContactedSet = new Set(alreadyContactedPhones);
 
-  // Create campaign
-  const campaign = await prisma.campaign.create({
-    data: {
-      userId,
+    const newContactsCount = uniqueContacts.filter(
+      (c) => !optOutSet.has(c.phone) && !alreadyContactedSet.has(c.phone)
+    ).length;
+
+    return res.json({
+      totalReceived: contacts.length,
+      duplicatesInList: duplicatesCount,
+      uniqueCount: uniqueContacts.length,
+      alreadyContactedCount: alreadyContactedPhones.length,
+      alreadyContactedPhones,
+      optOutCount: optOutPhones.length,
+      optOutPhones,
+      newContactsCount,
+      uniqueContacts,
+    });
+  } catch (err: any) {
+    logger.error({ err }, 'Erro ao verificar contatos');
+    return res.status(500).json({ error: 'Erro ao verificar lista de contatos.' });
+  }
+});
+
+/**
+ * POST /api/campaigns
+ * Create and start a new campaign for logged-in user
+ */
+campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const io = (req as any).io;
+    const {
       name,
+      contacts,
       messageTemplate,
-      mediaUrl: mediaUrl || null,
-      mediaType: mediaUrl ? mediaType : null,
-      delayMin,
-      delayMax,
-      batchSize,
-      batchPauseMin,
-      randomizeMedia,
-      optOutFooter,
-      totalContacts: deduplicatedContacts.length,
-      status: 'running',
-      startedAt: new Date(),
-    },
-  });
+      mediaUrl,
+      mediaType = 'image',
+      delayMin = 15,
+      delayMax = 45,
+      batchSize = 20,
+      batchPauseMin = 3,
+      randomizeMedia = true,
+      optOutFooter = true,
+      allowResend = false,
+    } = req.body;
 
-  // Create contacts and compute their status
-  const createdContacts = await Promise.all(
-    deduplicatedContacts.map((c: Record<string, string>) => {
-      const isBlacklisted = optOutSet.has(c.phone);
-      const isAlreadyContacted = !allowResend && alreadySentSet.has(c.phone);
+    if (!name || !contacts || !messageTemplate) {
+      return res.status(400).json({ error: 'Nome, contatos e modelo de mensagem são obrigatórios.' });
+    }
 
-      let status = 'pending';
-      let errorMsg: string | null = null;
+    if (!Array.isArray(contacts) || contacts.length === 0) {
+      return res.status(400).json({ error: 'A lista de contatos está vazia.' });
+    }
 
-      if (isBlacklisted) {
-        status = 'opted_out';
-        errorMsg = 'Opt-Out (solicitou SAIR)';
-      } else if (isAlreadyContacted) {
-        status = 'skipped';
-        errorMsg = 'Já contatado anteriormente (reenvio desabilitado)';
-      }
-
-      return prisma.contact.create({
-        data: {
-          campaignId: campaign.id,
-          phone: c.phone,
-          name: c.name || null,
-          variables: JSON.stringify(c),
-          status,
-          errorMsg,
-        },
+    if (!isWhatsAppConnected(userId)) {
+      return res.status(400).json({
+        error: 'WhatsApp não está conectado. Conecte seu aparelho via QR Code antes de disparar a campanha.',
       });
-    })
-  );
+    }
 
-  // Filtra apenas os contatos que realmente devem ser disparados
-  const activeContacts = createdContacts.filter((c) => c.status === 'pending');
-  const skippedCount = createdContacts.filter((c) => c.status === 'skipped').length;
-  const optedOutCount = createdContacts.filter((c) => c.status === 'opted_out').length;
+    const safeDelayMin = Math.max(Number(delayMin) || 15, 5);
+    const safeDelayMax = Math.max(Number(delayMax) || 45, safeDelayMin);
+    const safeBatchSize = Math.max(Number(batchSize) || 20, 1);
+    const safeBatchPauseMin = Math.max(Number(batchPauseMin) || 3, 1);
 
-  // Build personalized messages
-  const jobContacts = activeContacts.map((contact) => {
-    const rawContact = deduplicatedContacts.find((c: any) => c.phone === contact.phone) || {};
-    return {
-      id: contact.id,
-      phone: contact.phone,
-      message: processTemplate(messageTemplate, rawContact, { optOutFooter }),
-      mediaUrl: mediaUrl || null,
-      mediaType,
-      randomizeMedia,
-    };
-  });
+    // 1. De-duplicação na lista enviada
+    const seenPhones = new Set<string>();
+    const deduplicatedContacts: any[] = [];
+    for (const c of contacts) {
+      const norm = normalizePhone(c.phone);
+      if (!norm) continue;
+      if (!seenPhones.has(norm)) {
+        seenPhones.add(norm);
+        deduplicatedContacts.push({ ...c, phone: norm });
+      }
+    }
 
-  // Enqueue messages
-  if (jobContacts.length > 0) {
-    await enqueueCampaign({
-      userId,
-      campaignId: campaign.id,
-      contacts: jobContacts,
-      delayMin,
-      delayMax,
-      batchSize,
-      batchPauseMin,
+    const allPhones = Array.from(seenPhones);
+
+    // 2. Salva e sincroniza contatos no perfil do usuário em lotes seguros
+    await batchUpsertSavedContacts(userId, deduplicatedContacts);
+
+    // 3. Consulta lista de Opt-Out do usuário para filtrar preventivamente
+    const optOuts = await prisma.optOutContact.findMany({
+      where: {
+        userId,
+        phone: { in: allPhones },
+      },
+      select: { phone: true },
     });
-  } else {
-    await prisma.campaign.update({
-      where: { id: campaign.id },
-      data: { status: 'completed', completedAt: new Date() },
+    const optOutSet = new Set(optOuts.map((o) => o.phone));
+
+    // 4. Se allowResend for falso, identifica quem já recebeu mensagem antes
+    const alreadySentSet = new Set<string>();
+    if (!allowResend) {
+      const savedWithSent = await prisma.savedContact.findMany({
+        where: {
+          userId,
+          phone: { in: allPhones },
+          totalSent: { gt: 0 },
+        },
+        select: { phone: true },
+      });
+      savedWithSent.forEach((s) => alreadySentSet.add(s.phone));
+    }
+
+    // 5. Create campaign
+    const campaign = await prisma.campaign.create({
+      data: {
+        userId,
+        name,
+        messageTemplate,
+        mediaUrl: mediaUrl || null,
+        mediaType: mediaUrl ? mediaType : null,
+        delayMin: safeDelayMin,
+        delayMax: safeDelayMax,
+        batchSize: safeBatchSize,
+        batchPauseMin: safeBatchPauseMin,
+        randomizeMedia: randomizeMedia !== false,
+        optOutFooter: optOutFooter !== false,
+        totalContacts: deduplicatedContacts.length,
+        status: 'running',
+        startedAt: new Date(),
+      },
+    });
+
+    // 6. Create contacts em lotes seguros
+    const createdContacts = await batchCreateContacts(
+      campaign.id,
+      deduplicatedContacts,
+      optOutSet,
+      alreadySentSet,
+      allowResend
+    );
+
+    // Filtra apenas os contatos que realmente devem ser disparados
+    const activeContacts = createdContacts.filter((c) => c.status === 'pending');
+    const skippedCount = createdContacts.filter((c) => c.status === 'skipped').length;
+    const optedOutCount = createdContacts.filter((c) => c.status === 'opted_out').length;
+
+    // Build personalized messages
+    const jobContacts = activeContacts.map((contact) => {
+      const rawContact = deduplicatedContacts.find((c: any) => c.phone === contact.phone) || {};
+      return {
+        id: contact.id,
+        phone: contact.phone,
+        message: processTemplate(messageTemplate, rawContact, { optOutFooter }),
+        mediaUrl: mediaUrl || null,
+        mediaType,
+        randomizeMedia,
+      };
+    });
+
+    // Enqueue messages
+    if (jobContacts.length > 0) {
+      await enqueueCampaign({
+        userId,
+        campaignId: campaign.id,
+        contacts: jobContacts,
+        delayMin: safeDelayMin,
+        delayMax: safeDelayMax,
+        batchSize: safeBatchSize,
+        batchPauseMin: safeBatchPauseMin,
+      });
+    } else {
+      await prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { status: 'completed', completedAt: new Date() },
+      });
+    }
+
+    // Emit real-time event
+    if (io) {
+      try {
+        io.to(`user:${userId}`).emit('campaign:created', {
+          campaignId: campaign.id,
+          name,
+          total: deduplicatedContacts.length,
+          active: jobContacts.length,
+          skipped: skippedCount,
+          hasMedia: !!mediaUrl,
+        });
+      } catch (ioErr) {
+        logger.warn({ ioErr }, 'Falha ao emitir evento de criação de campanha');
+      }
+    }
+
+    return res.status(201).json({
+      campaign,
+      totalReceived: contacts.length,
+      totalDeduplicated: deduplicatedContacts.length,
+      enqueuedCount: jobContacts.length,
+      skippedCount,
+      optedOutCount,
+      message: `Campanha criada! ${jobContacts.length} contatos prontos para envio${
+        skippedCount > 0 ? ` (${skippedCount} já haviam recebido mensagem e foram preservados)` : ''
+      }.`,
+    });
+  } catch (err: any) {
+    logger.error({ err }, 'Erro ao criar campanha');
+    return res.status(500).json({
+      error: 'Erro interno ao criar campanha. Tente novamente em instantes.',
+      details: err.message,
     });
   }
-
-  // Emit real-time event
-  io.to(`user:${userId}`).emit('campaign:created', {
-    campaignId: campaign.id,
-    name,
-    total: deduplicatedContacts.length,
-    active: jobContacts.length,
-    skipped: skippedCount,
-    hasMedia: !!mediaUrl,
-  });
-
-  return res.status(201).json({
-    campaign,
-    totalReceived: contacts.length,
-    totalDeduplicated: deduplicatedContacts.length,
-    enqueuedCount: jobContacts.length,
-    skippedCount,
-    optedOutCount,
-    message: `Campanha criada! ${jobContacts.length} contatos prontos para envio${
-      skippedCount > 0 ? ` (${skippedCount} já haviam recebido mensagem e foram preservados)` : ''
-    }.`,
-  });
 });
 
 /**

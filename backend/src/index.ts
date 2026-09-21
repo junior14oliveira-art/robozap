@@ -108,6 +108,14 @@ async function bootstrap() {
   await restoreAllActiveSessions(io);
 }
 
+process.on('unhandledRejection', (reason) => {
+  logger.error({ reason }, '🛡️ Unhandled Rejection capturado para prevenir queda do processo');
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error({ err }, '🛡️ Uncaught Exception capturado para prevenir queda do processo');
+});
+
 bootstrap().catch((err) => {
   logger.error({ err }, 'Fatal error during bootstrap');
   process.exit(1);
