@@ -25,6 +25,8 @@ interface CampaignDetail {
   sentCount: number;
   failedCount: number;
   messageTemplate: string;
+  mediaUrl?: string | null;
+  mediaType?: string | null;
   delayMin: number;
   delayMax: number;
   createdAt: string;
@@ -37,6 +39,12 @@ interface CampaignDetail {
     status: string;
     errorMsg?: string;
     sentAt?: string;
+  }>;
+  logs?: Array<{
+    phone: string;
+    mediaSent: boolean;
+    status: string;
+    createdAt: string;
   }>;
 }
 
@@ -113,6 +121,41 @@ export default function CampaignDetailPage() {
             </div>
           ))}
         </div>
+        {campaign.mediaUrl && (
+          <div className="rounded-xl border border-border bg-secondary/40 p-3.5 flex items-center gap-4">
+            <div className="h-16 w-16 rounded-lg overflow-hidden bg-secondary border border-border flex items-center justify-center shrink-0">
+              <img
+                src={
+                  campaign.mediaUrl.startsWith('http')
+                    ? campaign.mediaUrl
+                    : `${process.env.NEXT_PUBLIC_API_URL || 'https://robozap-xsno.onrender.com'}/api/upload/media/${campaign.mediaUrl.split('/').pop()}`
+                }
+                alt="Foto da campanha"
+                className="h-full w-full object-cover"
+                onError={(e) => {
+                  (e.target as HTMLElement).style.display = 'none';
+                }}
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-whatsapp bg-whatsapp/15 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                  📸 Foto Anexada
+                </span>
+                <span className="text-[11px] text-muted-foreground bg-secondary px-2 py-0.5 rounded-md">
+                  Salva no Supabase
+                </span>
+              </div>
+              <p className="text-xs text-foreground font-mono mt-1 truncate">
+                {campaign.mediaUrl.split('/').pop()}
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Cada envio recebe assinatura SHA-256 única para blindagem anti-ban no WhatsApp.
+              </p>
+            </div>
+          </div>
+        )}
+
         <div>
           <p className="text-muted-foreground text-sm">Template da mensagem</p>
           <pre className="mt-1 whitespace-pre-wrap rounded-lg bg-secondary p-3 text-sm font-sans text-foreground">
@@ -136,39 +179,50 @@ export default function CampaignDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {campaign.contacts.map((contact) => (
-                <tr
-                  key={contact.id}
-                  className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
-                >
-                  <td className="px-4 py-3">
-                    <p className="font-medium text-foreground">{contact.name || '—'}</p>
-                    <p className="text-xs text-muted-foreground">{formatPhone(contact.phone)}</p>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1.5">
-                      {STATUS_ICON[contact.status] || STATUS_ICON.pending}
-                      <span
-                        className={cn(
-                          'text-xs',
-                          contact.status === 'sent' && 'text-whatsapp',
-                          contact.status === 'failed' && 'text-destructive',
-                          contact.status === 'pending' && 'text-muted-foreground'
+              {(() => {
+                const mediaSentPhones = new Set(
+                  campaign.logs?.filter((l) => l.mediaSent).map((l) => l.phone) || []
+                );
+
+                return campaign.contacts.map((contact) => (
+                  <tr
+                    key={contact.id}
+                    className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
+                  >
+                    <td className="px-4 py-3">
+                      <p className="font-medium text-foreground">{contact.name || '—'}</p>
+                      <p className="text-xs text-muted-foreground">{formatPhone(contact.phone)}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1.5">
+                        {STATUS_ICON[contact.status] || STATUS_ICON.pending}
+                        <span
+                          className={cn(
+                            'text-xs',
+                            contact.status === 'sent' && 'text-whatsapp',
+                            contact.status === 'failed' && 'text-destructive',
+                            contact.status === 'pending' && 'text-muted-foreground'
+                          )}
+                        >
+                          {contact.status === 'sent'
+                            ? 'Enviado'
+                            : contact.status === 'failed'
+                            ? contact.errorMsg || 'Falhou'
+                            : 'Pendente'}
+                        </span>
+                        {mediaSentPhones.has(contact.phone) && (
+                          <span className="text-[10px] bg-whatsapp/15 text-whatsapp font-medium px-1.5 py-0.5 rounded">
+                            📸 com foto
+                          </span>
                         )}
-                      >
-                        {contact.status === 'sent'
-                          ? 'Enviado'
-                          : contact.status === 'failed'
-                          ? contact.errorMsg || 'Falhou'
-                          : 'Pendente'}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground hidden md:table-cell">
-                    {contact.sentAt ? formatDate(contact.sentAt) : '—'}
-                  </td>
-                </tr>
-              ))}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground hidden md:table-cell">
+                      {contact.sentAt ? formatDate(contact.sentAt) : '—'}
+                    </td>
+                  </tr>
+                ));
+              })()}
             </tbody>
           </table>
         </div>

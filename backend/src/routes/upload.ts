@@ -66,6 +66,34 @@ const uploadMedia = multer({
 
 export const uploadRouter = Router();
 
+/**
+ * GET /api/upload/media/:filename
+ * Serve arquivos de imagem persistidos em disco ou no Supabase para tags <img>
+ */
+uploadRouter.get('/media/:filename', async (req: Request, res: Response) => {
+  const { filename } = req.params;
+  const filePath = path.join(MEDIA_DIR, filename);
+  if (fs.existsSync(filePath)) {
+    return res.sendFile(filePath);
+  }
+  try {
+    const stored = await prisma.storedMedia.findFirst({
+      where: {
+        OR: [
+          { filename },
+          { filename: { contains: filename.replace(/^media-\d+-/, '') } },
+        ],
+      },
+    });
+    if (stored) {
+      const buffer = Buffer.from(stored.data, 'base64');
+      res.setHeader('Content-Type', stored.mimetype || 'image/jpeg');
+      return res.send(buffer);
+    }
+  } catch (_) {}
+  return res.status(404).json({ error: 'Arquivo não encontrado.' });
+});
+
 uploadRouter.use(requireAuth);
 
 /**
