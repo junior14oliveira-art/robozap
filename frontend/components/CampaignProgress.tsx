@@ -12,6 +12,8 @@ interface CampaignProgressProps {
   campaignName: string;
   initialStatus?: string;
   initialTotal?: number;
+  initialSent?: number;
+  initialFailed?: number;
   delayMin?: number;
   delayMax?: number;
 }
@@ -30,21 +32,23 @@ function estimateRemaining(remaining: number, delayMin: number, delayMax: number
 export function CampaignProgress({
   campaignId,
   campaignName,
-  initialStatus = 'running',
+  initialStatus = 'pending',
   initialTotal = 0,
+  initialSent = 0,
+  initialFailed = 0,
   delayMin = 15,
   delayMax = 45,
 }: CampaignProgressProps) {
-  const { progress, status } = useCampaignProgress(campaignId);
+  const { progress, status } = useCampaignProgress(campaignId, initialStatus);
   const [loading, setLoading] = useState<string | null>(null);
   const { toast } = useToast();
 
   const currentStatus = status || initialStatus;
-  const total = progress?.total || initialTotal;
-  const sent = progress?.sent || 0;
-  const failed = progress?.failed || 0;
-  const percent = progress?.percent || 0;
-  const remaining = total - sent - failed;
+  const total = progress?.total ?? initialTotal;
+  const sent = progress?.sent ?? initialSent;
+  const failed = progress?.failed ?? initialFailed;
+  const percent = progress?.percent ?? (total > 0 ? Math.round(((sent + failed) / total) * 100) : 0);
+  const remaining = Math.max(total - sent - failed, 0);
 
   async function handleAction(action: 'pause' | 'resume' | 'cancel') {
     setLoading(action);
@@ -57,6 +61,10 @@ export function CampaignProgress({
             : action === 'resume'
             ? '▶️ Campanha retomada'
             : '🚫 Campanha cancelada',
+        description:
+          action === 'resume'
+            ? 'Continuando o disparo a partir do próximo contato pendente.'
+            : undefined,
         variant: action === 'cancel' ? 'destructive' : 'default',
       });
     } catch (err: any) {
@@ -108,48 +116,73 @@ export function CampaignProgress({
           </div>
         </div>
 
-        {/* Action buttons — Heuristic #3: Control & Freedom */}
-        {(currentStatus === 'running' || currentStatus === 'paused') && (
-          <div className="flex items-center gap-2 shrink-0">
-            {currentStatus === 'running' ? (
-              <button
-                onClick={() => handleAction('pause')}
-                disabled={!!loading}
-                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors disabled:opacity-50"
-              >
-                {loading === 'pause' ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Pause className="h-3.5 w-3.5" />
-                )}
-                Pausar
-              </button>
-            ) : (
-              <button
-                onClick={() => handleAction('resume')}
-                disabled={!!loading}
-                className="flex items-center gap-1.5 rounded-lg border border-whatsapp/40 bg-whatsapp/10 px-3 py-1.5 text-xs font-medium text-whatsapp hover:bg-whatsapp/20 transition-colors disabled:opacity-50"
-              >
-                {loading === 'resume' ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Play className="h-3.5 w-3.5" />
-                )}
-                Retomar
-              </button>
+        {/* Action buttons — Controle e Liberdade para o Usuário */}
+        {currentStatus !== 'completed' && (
+          <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+            {currentStatus === 'running' && (
+              <>
+                <button
+                  onClick={() => handleAction('pause')}
+                  disabled={!!loading}
+                  className="flex items-center gap-1.5 rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-1.5 text-xs font-semibold text-yellow-400 hover:bg-yellow-500/20 transition-colors disabled:opacity-50"
+                  title="Pausar disparos"
+                >
+                  {loading === 'pause' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Pause className="h-3.5 w-3.5" />
+                  )}
+                  Pausar
+                </button>
+                <button
+                  onClick={() => handleAction('cancel')}
+                  disabled={!!loading}
+                  className="flex items-center gap-1.5 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 transition-colors disabled:opacity-50"
+                  title="Cancelar campanha"
+                >
+                  {loading === 'cancel' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <X className="h-3.5 w-3.5" />
+                  )}
+                  Cancelar
+                </button>
+              </>
             )}
-            <button
-              onClick={() => handleAction('cancel')}
-              disabled={!!loading}
-              className="flex items-center gap-1.5 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 transition-colors disabled:opacity-50"
-            >
-              {loading === 'cancel' ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <X className="h-3.5 w-3.5" />
-              )}
-              Cancelar
-            </button>
+
+            {(currentStatus === 'paused' || currentStatus === 'cancelled' || currentStatus === 'pending') && (
+              <>
+                {remaining > 0 && (
+                  <button
+                    onClick={() => handleAction('resume')}
+                    disabled={!!loading}
+                    className="flex items-center gap-1.5 rounded-lg border border-whatsapp bg-whatsapp px-3.5 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-whatsapp/90 transition-colors disabled:opacity-50"
+                    title={`Continuar envio do próximo contato (${sent + failed + 1} de ${total})`}
+                  >
+                    {loading === 'resume' ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Play className="h-3.5 w-3.5 fill-current" />
+                    )}
+                    Continuar do Próximo Contato ({sent + failed + 1}/{total})
+                  </button>
+                )}
+                {currentStatus !== 'cancelled' && (
+                  <button
+                    onClick={() => handleAction('cancel')}
+                    disabled={!!loading}
+                    className="flex items-center gap-1.5 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-medium text-destructive hover:bg-destructive/20 transition-colors disabled:opacity-50"
+                  >
+                    {loading === 'cancel' ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <X className="h-3.5 w-3.5" />
+                    )}
+                    Cancelar
+                  </button>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>

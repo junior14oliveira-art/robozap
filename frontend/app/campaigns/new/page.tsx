@@ -115,6 +115,8 @@ export default function NewCampaignPage() {
     uniqueCount: number;
     alreadyContactedCount: number;
     alreadyContactedPhones: string[];
+    sentTodayCount: number;
+    sentTodayPhones: string[];
     optOutCount: number;
     optOutPhones: string[];
     newContactsCount: number;
@@ -848,6 +850,25 @@ export default function NewCampaignPage() {
                   <p className="text-[11px] text-muted-foreground pl-7">
                     Deixe desmarcado para disparar somente para quem nunca recebeu mensagens do sistema.
                   </p>
+                </div>
+              </div>
+            )}
+
+            {/* 🛡️ CARD TRAVA INTELIGENTE DIÁRIA ANTI-SPAM (MESMO DIA) */}
+            {contactAnalysis && contactAnalysis.sentTodayCount > 0 && (
+              <div className="rounded-2xl border border-sky-500/40 bg-sky-500/10 p-5 space-y-2">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-500/20 text-sky-400 shrink-0">
+                    <ShieldCheck className="h-5 w-5" />
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="text-sm font-bold text-foreground">
+                      🛡️ Trava Anti-Spam Diária Ativa ({contactAnalysis.sentTodayCount} contato(s) já receberam mensagem hoje)
+                    </h4>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Para blindar seu WhatsApp contra bloqueios e não importunar clientes, o sistema <strong>bloqueia múltiplos envios para a mesma pessoa no mesmo dia</strong>. Esses {contactAnalysis.sentTodayCount} contatos serão ignorados com segurança nesta campanha.
+                    </p>
+                  </div>
                 </div>
               </div>
             )}

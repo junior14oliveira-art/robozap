@@ -91,6 +91,8 @@ export default function CampaignDetailPage() {
         campaignName={campaign.name}
         initialStatus={campaign.status}
         initialTotal={campaign.totalContacts}
+        initialSent={campaign.sentCount}
+        initialFailed={campaign.failedCount}
         delayMin={campaign.delayMin}
         delayMax={campaign.delayMax}
       />

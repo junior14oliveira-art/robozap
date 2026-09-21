@@ -7,6 +7,7 @@ import {
   pauseCampaignJobs,
   resumeCampaignJobs,
   cancelCampaignJobs,
+  hasActiveRunner,
 } from '../queue/messageQueue';
 import { processTemplate, randomizeImageBuffer } from '../services/campaignService';
 import { normalizePhone } from '../services/spreadsheetService';
@@ -45,13 +46,34 @@ campaignRouter.get('/:id', async (req: AuthRequest, res: Response) => {
   const campaign = await prisma.campaign.findFirst({
     where: { id: req.params.id, userId },
     include: {
-      contacts: { orderBy: { status: 'asc' }, take: 100 },
+      contacts: { orderBy: { id: 'asc' }, take: 100 },
       logs: { orderBy: { createdAt: 'desc' }, take: 50 },
     },
   });
 
   if (!campaign) {
     return res.status(404).json({ error: 'Campanha não encontrada.' });
+  }
+
+  // Se o banco diz 'running' mas não há runner ativo em memória (ex: reinício do servidor):
+  // Sincroniza o status para que o usuário não fique preso e possa clicar "Continuar"
+  if (campaign.status === 'running' && !hasActiveRunner(campaign.id)) {
+    const pendingCount = await prisma.contact.count({
+      where: { campaignId: campaign.id, status: 'pending' },
+    });
+    if (pendingCount === 0) {
+      await prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { status: 'completed', completedAt: new Date() },
+      });
+      campaign.status = 'completed';
+    } else {
+      await prisma.campaign.update({
+        where: { id: campaign.id },
+        data: { status: 'paused' },
+      });
+      campaign.status = 'paused';
+    }
   }
 
   return res.json(campaign);
@@ -99,6 +121,7 @@ async function batchCreateContacts(
   contacts: any[],
   optOutSet: Set<string>,
   alreadySentSet: Set<string>,
+  sentTodaySet: Set<string>,
   allowResend: boolean
 ): Promise<any[]> {
   const results: any[] = [];
@@ -109,6 +132,7 @@ async function batchCreateContacts(
     const chunkResults = await Promise.all(
       chunk.map((c: Record<string, string>) => {
         const isBlacklisted = optOutSet.has(c.phone);
+        const isSentToday = sentTodaySet.has(c.phone);
         const isAlreadyContacted = !allowResend && alreadySentSet.has(c.phone);
 
         let status = 'pending';
@@ -117,6 +141,10 @@ async function batchCreateContacts(
         if (isBlacklisted) {
           status = 'opted_out';
           errorMsg = 'Opt-Out (solicitou SAIR)';
+        } else if (isSentToday) {
+          // Trava inteligente diária anti-spam (mesmo dia): NUNCA manda 2x no mesmo dia
+          status = 'skipped';
+          errorMsg = 'Já contatado hoje (trava de segurança diária anti-spam)';
         } else if (isAlreadyContacted) {
           status = 'skipped';
           errorMsg = 'Já contatado anteriormente (reenvio desabilitado)';
@@ -146,6 +174,7 @@ async function batchCreateContacts(
  * 2. Salva e sincroniza os contatos no perfil do usuário (SavedContact)
  * 3. Identifica contatos que já receberam mensagem em campanhas anteriores
  * 4. Identifica contatos na lista de Opt-Out (SAIR)
+ * 5. Identifica contatos que já receberam mensagem HOJE (trava anti-spam diária)
  */
 campaignRouter.post('/check-contacts', async (req: AuthRequest, res: Response) => {
   try {
@@ -158,6 +187,8 @@ campaignRouter.post('/check-contacts', async (req: AuthRequest, res: Response) =
         uniqueCount: 0,
         alreadyContactedCount: 0,
         alreadyContactedPhones: [],
+        sentTodayCount: 0,
+        sentTodayPhones: [],
         optOutCount: 0,
         optOutPhones: [],
         newContactsCount: 0,
@@ -208,8 +239,23 @@ campaignRouter.post('/check-contacts', async (req: AuthRequest, res: Response) =
     const alreadyContactedPhones = savedWithSent.map((s) => s.phone);
     const alreadyContactedSet = new Set(alreadyContactedPhones);
 
+    // Consulta quem já recebeu mensagem HOJE no perfil deste usuário (trava diária)
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const sentTodayContacts = await prisma.savedContact.findMany({
+      where: {
+        userId,
+        phone: { in: allPhones },
+        lastSentAt: { gte: startOfDay },
+      },
+      select: { phone: true },
+    });
+    const sentTodayPhones = sentTodayContacts.map((s) => s.phone);
+    const sentTodaySet = new Set(sentTodayPhones);
+
     const newContactsCount = uniqueContacts.filter(
-      (c) => !optOutSet.has(c.phone) && !alreadyContactedSet.has(c.phone)
+      (c) => !optOutSet.has(c.phone) && !alreadyContactedSet.has(c.phone) && !sentTodaySet.has(c.phone)
     ).length;
 
     return res.json({
@@ -218,6 +264,8 @@ campaignRouter.post('/check-contacts', async (req: AuthRequest, res: Response) =
       uniqueCount: uniqueContacts.length,
       alreadyContactedCount: alreadyContactedPhones.length,
       alreadyContactedPhones,
+      sentTodayCount: sentTodayPhones.length,
+      sentTodayPhones,
       optOutCount: optOutPhones.length,
       optOutPhones,
       newContactsCount,
@@ -312,7 +360,21 @@ campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
       savedWithSent.forEach((s) => alreadySentSet.add(s.phone));
     }
 
-    // 5. Create campaign
+    // 5. Trava Inteligente Anti-Spam Diária: identifica quem já recebeu mensagem HOJE
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const sentTodayContacts = await prisma.savedContact.findMany({
+      where: {
+        userId,
+        phone: { in: allPhones },
+        lastSentAt: { gte: startOfDay },
+      },
+      select: { phone: true },
+    });
+    const sentTodaySet = new Set(sentTodayContacts.map((s) => s.phone));
+
+    // 6. Create campaign
     const campaign = await prisma.campaign.create({
       data: {
         userId,
@@ -332,12 +394,13 @@ campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
       },
     });
 
-    // 6. Create contacts em lotes seguros
+    // 7. Create contacts em lotes seguros
     const createdContacts = await batchCreateContacts(
       campaign.id,
       deduplicatedContacts,
       optOutSet,
       alreadySentSet,
+      sentTodaySet,
       allowResend
     );
 
@@ -435,18 +498,100 @@ campaignRouter.post('/:id/pause', async (req: AuthRequest, res: Response) => {
  * POST /api/campaigns/:id/resume
  */
 campaignRouter.post('/:id/resume', async (req: AuthRequest, res: Response) => {
-  const userId = req.user!.id;
-  const io = (req as any).io;
-  const { id } = req.params;
+  try {
+    const userId = req.user!.id;
+    const io = (req as any).io;
+    const { id } = req.params;
 
-  const campaign = await prisma.campaign.findFirst({ where: { id, userId } });
-  if (!campaign) return res.status(404).json({ error: 'Campanha não encontrada.' });
+    const campaign = await prisma.campaign.findFirst({
+      where: { id, userId },
+      include: {
+        contacts: {
+          where: { status: 'pending' },
+          orderBy: { id: 'asc' },
+        },
+      },
+    });
+    if (!campaign) return res.status(404).json({ error: 'Campanha não encontrada.' });
 
-  await resumeCampaignJobs(id);
-  await prisma.campaign.update({ where: { id }, data: { status: 'running' } });
-  io.emit(`campaign:${id}:status`, { status: 'running' });
+    if (!isWhatsAppConnected(userId)) {
+      return res.status(400).json({
+        error: 'WhatsApp não está conectado. Conecte seu aparelho via QR Code antes de retomar a campanha.',
+      });
+    }
 
-  res.json({ message: 'Campanha retomada.' });
+    // 1. Tenta retomar runner em memória se estiver ativo
+    const runnerResumed = await resumeCampaignJobs(id);
+
+    if (!runnerResumed) {
+      // 2. Runner em memória não existe (servidor reiniciou ou campanha foi interrompida).
+      // Recarrega APENAS os contatos PENDENTES diretamente do banco de dados!
+      // Contatos já enviados ('sent') NUNCA são reenviados!
+      const pendingContacts = campaign.contacts;
+
+      if (pendingContacts.length === 0) {
+        await prisma.campaign.update({
+          where: { id },
+          data: { status: 'completed', completedAt: new Date() },
+        });
+        io?.emit(`campaign:${id}:status`, { status: 'completed' });
+        return res.json({
+          message: 'Todos os contatos desta campanha já foram finalizados com sucesso!',
+          remaining: 0,
+        });
+      }
+
+      logger.info(
+        { campaignId: id, pendingCount: pendingContacts.length, nextPhone: pendingContacts[0]?.phone },
+        '▶️ Retomando campanha a partir do próximo contato pendente no banco de dados'
+      );
+
+      const jobContacts = pendingContacts.map((contact) => {
+        let rawContact: any = {};
+        try {
+          rawContact = contact.variables ? JSON.parse(contact.variables) : {};
+        } catch (_) {}
+        if (!rawContact.name && contact.name) rawContact.name = contact.name;
+        if (!rawContact.phone && contact.phone) rawContact.phone = contact.phone;
+
+        return {
+          id: contact.id,
+          phone: contact.phone,
+          message: processTemplate(campaign.messageTemplate, rawContact, {
+            optOutFooter: campaign.optOutFooter,
+          }),
+          mediaUrl: campaign.mediaUrl,
+          mediaType: campaign.mediaType || 'image',
+          randomizeMedia: campaign.randomizeMedia,
+        };
+      });
+
+      const startIndex = campaign.sentCount + campaign.failedCount;
+
+      await enqueueCampaign({
+        userId,
+        campaignId: campaign.id,
+        contacts: jobContacts,
+        delayMin: campaign.delayMin,
+        delayMax: campaign.delayMax,
+        batchSize: campaign.batchSize,
+        batchPauseMin: campaign.batchPauseMin,
+        totalCampaignContacts: campaign.totalContacts,
+        startIndex,
+      });
+    }
+
+    await prisma.campaign.update({ where: { id }, data: { status: 'running' } });
+    io?.emit(`campaign:${id}:status`, { status: 'running' });
+
+    return res.json({
+      message: `Campanha retomada! Continuando a partir do contato ${campaign.sentCount + campaign.failedCount + 1} de ${campaign.totalContacts}.`,
+      remaining: campaign.contacts.length,
+    });
+  } catch (err: any) {
+    logger.error({ err }, 'Erro ao retomar campanha');
+    return res.status(500).json({ error: 'Erro ao retomar campanha: ' + err.message });
+  }
 });
 
 /**

@@ -13,9 +13,9 @@ export interface CampaignProgress {
   status?: string;
 }
 
-export function useCampaignProgress(campaignId: string | null) {
+export function useCampaignProgress(campaignId: string | null, initialStatus?: string) {
   const [progress, setProgress] = useState<CampaignProgress | null>(null);
-  const [status, setStatus] = useState<string>('pending');
+  const [status, setStatus] = useState<string | null>(initialStatus || null);
 
   useEffect(() => {
     if (!campaignId) return;
@@ -39,5 +39,5 @@ export function useCampaignProgress(campaignId: string | null) {
     };
   }, [campaignId]);
 
-  return { progress, status };
+  return { progress, status: status || initialStatus || 'pending' };
 }

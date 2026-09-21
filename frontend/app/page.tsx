@@ -133,6 +133,8 @@ export default function DashboardPage() {
                 campaignName={campaign.name}
                 initialStatus={campaign.status}
                 initialTotal={campaign.totalContacts}
+                initialSent={campaign.sentCount}
+                initialFailed={campaign.failedCount}
                 delayMin={campaign.delayMin}
                 delayMax={campaign.delayMax}
               />

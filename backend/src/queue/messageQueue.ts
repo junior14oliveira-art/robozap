@@ -128,6 +128,11 @@ async function startCampaignRunner(runner: CampaignRunner): Promise<void> {
   logger.info({ campaignId: runner.campaignId, userId: runner.userId }, '🏁 Runner da campanha finalizado.');
 }
 
+export function hasActiveRunner(campaignId: string): boolean {
+  const runner = activeRunners.get(campaignId);
+  return !!(runner && !runner.cancelled && runner.queue.length > 0);
+}
+
 /**
  * Enfileira contatos da campanha calculando os delays humanizados
  * e intervalos de resfriamento de lote (Batch Cooling).
@@ -147,27 +152,40 @@ export async function enqueueCampaign(params: {
   delayMax: number;
   batchSize?: number;
   batchPauseMin?: number;
+  totalCampaignContacts?: number;
+  startIndex?: number;
 }): Promise<void> {
-  const { userId, campaignId, contacts, delayMin, delayMax, batchSize = 20, batchPauseMin = 3 } = params;
-  const totalContacts = contacts.length;
+  const {
+    userId,
+    campaignId,
+    contacts,
+    delayMin,
+    delayMax,
+    batchSize = 20,
+    batchPauseMin = 3,
+    totalCampaignContacts,
+    startIndex = 0,
+  } = params;
+  const totalContacts = totalCampaignContacts || contacts.length;
 
   const queueItems: MessageJobData[] = [];
 
-  for (let index = 0; index < totalContacts; index++) {
-    const contact = contacts[index];
+  for (let i = 0; i < contacts.length; i++) {
+    const contact = contacts[i];
+    const currentIndex = startIndex + i;
     const randomDelayMs = randomBetween(delayMin * 1000, delayMax * 1000);
     let jobDelay = 0;
     let isBatchCooldown = false;
 
-    if (index === 0) {
+    if (i === 0) {
       jobDelay = 1500; // 1.5s inicial
     } else {
-      if (batchSize > 0 && index % batchSize === 0) {
+      if (batchSize > 0 && currentIndex > 0 && currentIndex % batchSize === 0) {
         const cooldownMs = batchPauseMin * 60 * 1000;
         jobDelay = cooldownMs + randomDelayMs;
         isBatchCooldown = true;
         logger.info(
-          { campaignId, userId, contactIndex: index, cooldownMinutes: batchPauseMin },
+          { campaignId, userId, contactIndex: currentIndex, cooldownMinutes: batchPauseMin },
           '🧊 Aplicando resfriamento de lote (Batch Cooling) anti-ban'
         );
       } else {
@@ -184,7 +202,7 @@ export async function enqueueCampaign(params: {
       mediaUrl: contact.mediaUrl,
       mediaType: contact.mediaType || 'image',
       randomizeMedia: contact.randomizeMedia !== false,
-      index,
+      index: currentIndex,
       totalContacts,
       delayMs: jobDelay,
       isBatchCooldown,
@@ -206,7 +224,9 @@ export async function enqueueCampaign(params: {
     {
       campaignId,
       userId,
-      total: totalContacts,
+      enqueuedCount: contacts.length,
+      totalCampaignContacts: totalContacts,
+      startIndex,
       hasMedia: contacts.some((c) => !!c.mediaUrl),
     },
     '📨 Disparos enfileirados no Motor de Fila Nativo RoboZap com Batch Cooling e Spintax'
@@ -226,12 +246,16 @@ export async function pauseCampaignJobs(campaignId: string): Promise<void> {
   logger.info({ campaignId }, '⏸️ Campanha pausada');
 }
 
-export async function resumeCampaignJobs(campaignId: string): Promise<void> {
+export async function resumeCampaignJobs(campaignId: string): Promise<boolean> {
   const runner = activeRunners.get(campaignId);
-  if (runner) {
+  if (runner && runner.queue.length > 0) {
     runner.paused = false;
+    runner.cancelled = false;
+    logger.info({ campaignId }, '▶️ Campanha retomada no runner em memória');
+    return true;
   }
-  logger.info({ campaignId }, '▶️ Campanha retomada');
+  logger.info({ campaignId }, 'ℹ️ Nenhum runner ativo em memória para esta campanha');
+  return false;
 }
 
 export async function cancelCampaignJobs(campaignId: string): Promise<void> {

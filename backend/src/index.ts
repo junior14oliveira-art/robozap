@@ -15,6 +15,7 @@ import { templateRouter } from './routes/template';
 import { errorHandler } from './middleware/errorHandler';
 import { restoreAllActiveSessions } from './whatsapp/client';
 import { initWorker } from './queue/worker';
+import { prisma } from './prisma';
 import pino from 'pino';
 
 export const logger = pino({
@@ -106,6 +107,24 @@ async function bootstrap() {
 
   // Restore existing active WhatsApp sessions
   await restoreAllActiveSessions(io);
+
+  // Pausa com segurança campanhas órfãs (que estavam como 'running' antes do reinício do container)
+  // Assim o usuário vê 'Pausada' e o botão 'Continuar do Próximo Contato' aparece claramente
+  try {
+    const orphanedCampaigns = await prisma.campaign.findMany({
+      where: { status: 'running' },
+      select: { id: true, name: true },
+    });
+    for (const c of orphanedCampaigns) {
+      await prisma.campaign.update({
+        where: { id: c.id },
+        data: { status: 'paused' },
+      });
+      logger.info({ campaignId: c.id, name: c.name }, '⏸️ Campanha órfã pausada com segurança na inicialização para permitir retomada');
+    }
+  } catch (err: any) {
+    logger.warn({ err }, 'Aviso ao verificar campanhas órfãs na inicialização');
+  }
 }
 
 process.on('unhandledRejection', (reason) => {

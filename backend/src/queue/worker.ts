@@ -1,8 +1,8 @@
 import { Server as SocketIOServer } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
-import fs from 'fs';
 import path from 'path';
-import { MessageJobData } from './messageQueue';
+import fs from 'fs';
+import { MessageJobData, cancelCampaignJobs } from './messageQueue';
 import { getWASocket, isWhatsAppConnected } from '../whatsapp/client';
 import { randomizeImageBuffer } from '../services/campaignService';
 import { logger } from '../index';
@@ -123,13 +123,15 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
   // ── Checagem de pausa / cancelamento ──────────────────────────────────────
   const { paused, cancelled } = await checkCampaignFlags(campaignId);
   if (cancelled) {
-    logger.info({ campaignId }, 'Campanha cancelada, ignorando disparo.');
+    logger.info({ campaignId }, '🚫 Campanha cancelada no banco, interrompendo fila e runner imediatamente.');
+    await cancelCampaignJobs(campaignId);
     return;
   }
   if (paused) {
     const resumed = await waitForResume(campaignId);
     if (!resumed) {
-      logger.info({ campaignId }, 'Campanha cancelada durante a pausa.');
+      logger.info({ campaignId }, '🚫 Campanha cancelada durante a pausa, interrompendo runner.');
+      await cancelCampaignJobs(campaignId);
       return;
     }
   }
@@ -151,6 +153,88 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
       where: { id: contactId },
       data: { status: 'skipped', errorMsg: 'Opt-out (solicitou SAIR)' },
     });
+    const updatedCampaign = await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { failedCount: { increment: 1 } },
+    });
+    const processed = updatedCampaign.sentCount + updatedCampaign.failedCount;
+    const percent = Math.min(Math.round((processed / totalContacts) * 100), 100);
+    io?.emit(`campaign:${campaignId}:progress`, {
+      sent: updatedCampaign.sentCount,
+      failed: updatedCampaign.failedCount,
+      total: totalContacts,
+      percent,
+      lastPhone: normalizedPhone,
+      lastError: 'Opt-out (solicitou SAIR)',
+    });
+    if (processed >= totalContacts) {
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: 'completed', completedAt: new Date() },
+      });
+      io?.emit(`campaign:${campaignId}:status`, { status: 'completed' });
+    }
+    return;
+  }
+
+  // ── Trava Inteligente Anti-Spam Diária (Mesmo Dia) ───────────────────────
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const savedContact = await prisma.savedContact.findUnique({
+    where: {
+      userId_phone: {
+        userId,
+        phone: normalizedPhone,
+      },
+    },
+    select: { lastSentAt: true },
+  });
+
+  if (savedContact?.lastSentAt && savedContact.lastSentAt >= startOfDay) {
+    logger.info(
+      { campaignId, userId, phone: normalizedPhone, lastSentAt: savedContact.lastSentAt },
+      '🛡️ Trava diária anti-spam: número já recebeu mensagem hoje. Ignorando envio para proteger o chip.'
+    );
+    await prisma.contact.update({
+      where: { id: contactId },
+      data: {
+        status: 'skipped',
+        errorMsg: 'Já contatado hoje (trava de segurança diária anti-spam)',
+      },
+    });
+    await prisma.messageLog.create({
+      data: {
+        campaignId,
+        phone: normalizedPhone,
+        message,
+        mediaSent: false,
+        status: 'failed',
+        errorMsg: 'Já contatado hoje (trava de segurança diária anti-spam)',
+        duration: 0,
+      },
+    });
+    const updatedCampaign = await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { failedCount: { increment: 1 } },
+    });
+    const processed = updatedCampaign.sentCount + updatedCampaign.failedCount;
+    const percent = Math.min(Math.round((processed / totalContacts) * 100), 100);
+    io?.emit(`campaign:${campaignId}:progress`, {
+      sent: updatedCampaign.sentCount,
+      failed: updatedCampaign.failedCount,
+      total: totalContacts,
+      percent,
+      lastPhone: normalizedPhone,
+      lastError: 'Já contatado hoje (ignorado)',
+    });
+    if (processed >= totalContacts) {
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: 'completed', completedAt: new Date() },
+      });
+      io?.emit(`campaign:${campaignId}:status`, { status: 'completed' });
+    }
     return;
   }
 
