@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import path from 'path';
 import fs from 'fs';
 import { MessageJobData, cancelCampaignJobs } from './messageQueue';
-import { getWASocket, isWhatsAppConnected } from '../whatsapp/client';
+import { getWASocket, isWhatsAppConnected, saveMessageToRetryStore } from '../whatsapp/client';
 import { randomizeImageBuffer } from '../services/campaignService';
 import { logger } from '../index';
 import { prisma } from '../prisma';
@@ -365,6 +365,34 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
         resolvedMediaPath = relPath;
       }
     }
+
+    // Se a imagem não existe em disco (ex: após restart/redeploy do Render), recupera do Supabase
+    if (!resolvedMediaPath || !fs.existsSync(resolvedMediaPath)) {
+      const filename = path.basename(mediaUrl);
+      try {
+        const stored = await prisma.storedMedia.findFirst({
+          where: {
+            OR: [
+              { filename },
+              { filename: { contains: filename.replace(/^media-\d+-/, '') } },
+            ],
+          },
+        });
+        if (stored) {
+          const uploadsDir = path.resolve(process.env.UPLOAD_DIR || './uploads');
+          const mediaDir = path.join(uploadsDir, 'media');
+          if (!fs.existsSync(mediaDir)) fs.mkdirSync(mediaDir, { recursive: true });
+          const targetPath = path.join(mediaDir, stored.filename);
+          fs.writeFileSync(targetPath, Buffer.from(stored.data, 'base64'));
+          resolvedMediaPath = targetPath;
+          logger.info({ campaignId, filename: stored.filename }, '💾 Foto recuperada com sucesso do Supabase para o disco local');
+        } else {
+          logger.warn({ campaignId, filename }, '⚠️ Foto não encontrada nem no disco nem no Supabase');
+        }
+      } catch (err: any) {
+        logger.error({ err: err.message }, 'Falha ao recuperar foto do Supabase');
+      }
+    }
   }
 
   try {
@@ -379,7 +407,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
 
       const mime = getImageMime(resolvedMediaPath);
 
-      await withTimeout(
+      const sentMsg = await withTimeout(
         sock.sendMessage(targetJid, {
           image: fileBuffer as any,
           caption: message,
@@ -388,15 +416,21 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
         60000,
         'sendMessage image'
       );
+      if (sentMsg?.key?.id) {
+        saveMessageToRetryStore(sentMsg.key.id, sentMsg);
+      }
       mediaSent = true;
       logger.info({ campaignId, phone: normalizedPhone }, '📸 Foto enviada com sucesso (Hash único anti-ban)');
     } else {
       // 💬 Envio apenas de Texto
-      await withTimeout(
+      const sentMsg = await withTimeout(
         sock.sendMessage(targetJid, { text: message }),
         60000,
         'sendMessage text'
       );
+      if (sentMsg?.key?.id) {
+        saveMessageToRetryStore(sentMsg.key.id, sentMsg);
+      }
     }
     logger.info({ campaignId, userId, phone: normalizedPhone, index }, '✅ sendMessage concluído');
   } catch (err: any) {

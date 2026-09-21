@@ -74,6 +74,18 @@ function emitToUser(io: SocketIOServer, userId: string, event: string, payload: 
   io.to(`user:${userId}`).emit(event, { ...payload, userId });
 }
 
+// ── Cache de mensagens para atendimento de Retry Requests (elimina "Aguardando mensagem...") ──
+const messageRetryStore = new Map<string, any>();
+const MAX_RETRY_STORE_SIZE = 500;
+
+export function saveMessageToRetryStore(messageId: string, msg: any) {
+  if (messageRetryStore.size >= MAX_RETRY_STORE_SIZE) {
+    const firstKey = messageRetryStore.keys().next().value;
+    if (firstKey) messageRetryStore.delete(firstKey);
+  }
+  messageRetryStore.set(messageId, msg);
+}
+
 /**
  * Inicializa a instância Baileys de um usuário específico
  */
@@ -154,7 +166,14 @@ export async function initWhatsAppClient(
     connectTimeoutMs: 60000,
     defaultQueryTimeoutMs: 60000,
     keepAliveIntervalMs: 30000,
-    getMessage: async () => undefined,
+    getMessage: async (key) => {
+      if (key?.id) {
+        const stored = messageRetryStore.get(key.id);
+        if (stored?.message) return stored.message;
+        if (stored) return stored;
+      }
+      return undefined;
+    },
   });
 
   session.socket = sock;
@@ -275,6 +294,12 @@ export async function initWhatsAppClient(
 
   // ── Auto Opt-Out / Anti-Denúncia Listener ────────────────────────────────
   sock.ev.on('messages.upsert', async (m) => {
+    for (const msg of m.messages) {
+      if (msg.key?.id && msg.message) {
+        saveMessageToRetryStore(msg.key.id, msg);
+      }
+    }
+
     if (m.type !== 'notify') return;
     for (const msg of m.messages) {
       if (msg.key.fromMe) continue;

@@ -11,7 +11,7 @@ import {
 } from '../queue/messageQueue';
 import { processTemplate, randomizeImageBuffer } from '../services/campaignService';
 import { normalizePhone } from '../services/spreadsheetService';
-import { getWASocket, isWhatsAppConnected } from '../whatsapp/client';
+import { getWASocket, isWhatsAppConnected, saveMessageToRetryStore } from '../whatsapp/client';
 import { requireAuth, AuthRequest } from '../middleware/auth';
 import { logger } from '../index';
 
@@ -708,13 +708,19 @@ campaignRouter.post('/test-send', async (req: AuthRequest, res: Response) => {
       const ext = path.extname(resolvedMediaPath).toLowerCase();
       const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
 
-      await sock.sendMessage(targetJid, {
+      const sentMsg = await sock.sendMessage(targetJid, {
         image: fileBuffer,
         caption: message,
         mimetype: mime,
       });
+      if (sentMsg?.key?.id) {
+        saveMessageToRetryStore(sentMsg.key.id, sentMsg);
+      }
     } else {
-      await sock.sendMessage(targetJid, { text: message });
+      const sentMsg = await sock.sendMessage(targetJid, { text: message });
+      if (sentMsg?.key?.id) {
+        saveMessageToRetryStore(sentMsg.key.id, sentMsg);
+      }
     }
 
     return res.json({

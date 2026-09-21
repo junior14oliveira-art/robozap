@@ -169,3 +169,17 @@ model WhatsAppAuthKey {
   @@index([userId])
 }
 
+// Armazenamento persistente de imagens/mídias para sobreviver aos deploys/restarts do Render
+model StoredMedia {
+  id        String   @id @default(uuid())
+  filename  String   @unique
+  mimetype  String   @default("image/jpeg")
+  data      String   @db.Text // Base64 da imagem
+  size      Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([filename])
+}
+
+

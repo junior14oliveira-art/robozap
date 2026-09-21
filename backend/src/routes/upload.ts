@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { parseSpreadsheet } from '../services/spreadsheetService';
 import { requireAuth } from '../middleware/auth';
+import { prisma } from '../prisma';
 
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './uploads');
 const MEDIA_DIR = path.join(UPLOAD_DIR, 'media');
@@ -121,6 +122,28 @@ uploadRouter.post('/media', (req: Request, res: Response) => {
     }
 
     const relativeUrl = `/uploads/media/${path.basename(req.file.path)}`;
+    const filename = path.basename(req.file.path);
+
+    // Salva de forma persistente no Supabase para sobreviver a redeploys/restarts do Render
+    try {
+      const fileBuffer = fs.readFileSync(req.file.path);
+      prisma.storedMedia
+        .upsert({
+          where: { filename },
+          create: {
+            filename,
+            mimetype: req.file.mimetype || 'image/jpeg',
+            data: fileBuffer.toString('base64'),
+            size: req.file.size,
+          },
+          update: {
+            mimetype: req.file.mimetype || 'image/jpeg',
+            data: fileBuffer.toString('base64'),
+            size: req.file.size,
+          },
+        })
+        .catch(() => {});
+    } catch (_) {}
 
     return res.json({
       filename: req.file.originalname,
