@@ -22,6 +22,7 @@ import {
 
 interface UserSessionState {
   socket: WASocket | null;
+  isOpen: boolean;
   isConnecting: boolean;
   currentQrCode: string | null;
   reconnectTimeout: NodeJS.Timeout | null;
@@ -35,6 +36,7 @@ function getSession(userId: string): UserSessionState {
   if (!state) {
     state = {
       socket: null,
+      isOpen: false,
       isConnecting: false,
       currentQrCode: null,
       reconnectTimeout: null,
@@ -57,8 +59,8 @@ export function getWASocket(userId: string = 'default'): WASocket | null {
 }
 
 export function isWhatsAppConnected(userId: string = 'default'): boolean {
-  const sock = userSessions.get(userId)?.socket;
-  return sock !== null && sock !== undefined && (sock as any).user !== undefined;
+  const s = userSessions.get(userId);
+  return !!(s && s.isOpen && s.socket && s.socket.user);
 }
 
 export function getCurrentQrCode(userId: string = 'default'): string | null {
@@ -66,13 +68,10 @@ export function getCurrentQrCode(userId: string = 'default'): string | null {
 }
 
 /**
- * Emite eventos tanto para a sala do usuário quanto para o broadcast com sufixo do userId
+ * Emite eventos exclusivamente para a sala do usuário
  */
 function emitToUser(io: SocketIOServer, userId: string, event: string, payload: any) {
   io.to(`user:${userId}`).emit(event, { ...payload, userId });
-  io.emit(`${event}:${userId}`, { ...payload, userId });
-  // Broadcast geral com userId anexado
-  io.emit(event, { ...payload, userId });
 }
 
 /**
@@ -188,7 +187,12 @@ export async function initWhatsAppClient(
       } catch (_e) {}
     }
 
+    if (connection === 'connecting') {
+      session.isOpen = false;
+    }
+
     if (connection === 'open') {
+      session.isOpen = true;
       session.isConnecting = false;
       session.currentQrCode = null;
       const phone = sock.user?.id?.split(':')[0] || 'unknown';
@@ -213,6 +217,7 @@ export async function initWhatsAppClient(
     }
 
     if (connection === 'close') {
+      session.isOpen = false;
       session.isConnecting = false;
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
@@ -221,6 +226,7 @@ export async function initWhatsAppClient(
 
       if (isLoggedOut) {
         logger.info({ userId }, '🗑️ Sessão encerrada pelo usuário/WhatsApp (Logout). Limpando sessão...');
+        session.isOpen = false;
         session.socket = null;
         session.currentQrCode = null;
         clearUserSession(userId);
@@ -314,6 +320,7 @@ export async function initWhatsAppClient(
  */
 export async function logoutWhatsApp(io: SocketIOServer, userId: string = 'default'): Promise<void> {
   const session = getSession(userId);
+  session.isOpen = false;
   session.currentQrCode = null;
   session.isConnecting = false;
 

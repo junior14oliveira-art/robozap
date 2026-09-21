@@ -70,6 +70,7 @@ interface CampaignRunner {
   cancelled: boolean;
   queue: MessageJobData[];
   timeoutRef: NodeJS.Timeout | null;
+  resolveDelay: (() => void) | null;
 }
 
 const activeRunners = new Map<string, CampaignRunner>();
@@ -101,8 +102,10 @@ async function startCampaignRunner(runner: CampaignRunner): Promise<void> {
     // Aguarda o delay humanizado do job
     if (jobData.delayMs > 0) {
       await new Promise<void>((resolve) => {
+        runner.resolveDelay = resolve;
         runner.timeoutRef = setTimeout(() => {
           runner.timeoutRef = null;
+          runner.resolveDelay = null;
           resolve();
         }, jobData.delayMs);
       });
@@ -216,6 +219,7 @@ export async function enqueueCampaign(params: {
     cancelled: false,
     queue: queueItems,
     timeoutRef: null,
+    resolveDelay: null,
   };
 
   activeRunners.set(campaignId, runner);
@@ -265,6 +269,10 @@ export async function cancelCampaignJobs(campaignId: string): Promise<void> {
     if (runner.timeoutRef) {
       clearTimeout(runner.timeoutRef);
       runner.timeoutRef = null;
+    }
+    if (runner.resolveDelay) {
+      runner.resolveDelay();
+      runner.resolveDelay = null;
     }
     runner.queue = [];
   }

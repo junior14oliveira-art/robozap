@@ -456,6 +456,26 @@ campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
       }
     }
 
+    if (jobContacts.length === 0) {
+      const sentTodayCount = createdContacts.filter(
+        (c) => c.status === 'skipped' && c.errorMsg?.includes('hoje')
+      ).length;
+      const alreadySentCount = createdContacts.filter(
+        (c) => c.status === 'skipped' && c.errorMsg?.includes('anteriormente')
+      ).length;
+
+      return res.status(200).json({
+        campaign,
+        totalReceived: contacts.length,
+        totalDeduplicated: deduplicatedContacts.length,
+        enqueuedCount: 0,
+        skippedCount,
+        optedOutCount,
+        warning: `Nenhum contato foi enfileirado para disparo: ${optedOutCount} bloqueado(s) por Opt-Out, ${sentTodayCount} bloqueado(s) pela trava diária anti-spam (já contatado hoje) e ${alreadySentCount} já contatado(s) anteriormente. Para reenviar para contatos anteriores, marque a opção 'Permitir reenvio' (allowResend: true).`,
+        message: 'Nenhum novo contato para envio.',
+      });
+    }
+
     return res.status(201).json({
       campaign,
       totalReceived: contacts.length,
@@ -489,7 +509,7 @@ campaignRouter.post('/:id/pause', async (req: AuthRequest, res: Response) => {
 
   await pauseCampaignJobs(id);
   await prisma.campaign.update({ where: { id }, data: { status: 'paused' } });
-  io.emit(`campaign:${id}:status`, { status: 'paused' });
+  io?.to(`campaign:${id}`).emit(`campaign:${id}:status`, { status: 'paused' });
 
   res.json({ message: 'Campanha pausada.' });
 });
@@ -534,7 +554,7 @@ campaignRouter.post('/:id/resume', async (req: AuthRequest, res: Response) => {
           where: { id },
           data: { status: 'completed', completedAt: new Date() },
         });
-        io?.emit(`campaign:${id}:status`, { status: 'completed' });
+        io?.to(`campaign:${id}`).emit(`campaign:${id}:status`, { status: 'completed' });
         return res.json({
           message: 'Todos os contatos desta campanha já foram finalizados com sucesso!',
           remaining: 0,
@@ -582,7 +602,7 @@ campaignRouter.post('/:id/resume', async (req: AuthRequest, res: Response) => {
     }
 
     await prisma.campaign.update({ where: { id }, data: { status: 'running' } });
-    io?.emit(`campaign:${id}:status`, { status: 'running' });
+    io?.to(`campaign:${id}`).emit(`campaign:${id}:status`, { status: 'running' });
 
     return res.json({
       message: `Campanha retomada! Continuando a partir do contato ${campaign.sentCount + campaign.failedCount + 1} de ${campaign.totalContacts}.`,
@@ -607,7 +627,7 @@ campaignRouter.post('/:id/cancel', async (req: AuthRequest, res: Response) => {
 
   await cancelCampaignJobs(id);
   await prisma.campaign.update({ where: { id }, data: { status: 'cancelled' } });
-  io.emit(`campaign:${id}:status`, { status: 'cancelled' });
+  io?.to(`campaign:${id}`).emit(`campaign:${id}:status`, { status: 'cancelled' });
 
   res.json({ message: 'Campanha cancelada.' });
 });

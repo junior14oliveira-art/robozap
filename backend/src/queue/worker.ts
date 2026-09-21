@@ -10,6 +10,21 @@ import { prisma } from '../prisma';
 
 let globalIo: SocketIOServer | null = null;
 
+class OperationTimeoutError extends Error {}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new OperationTimeoutError(`Timeout de ${ms}ms em ${label}`)),
+      ms
+    );
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 /**
  * Simula indicador de digitação com duração proporcional
  * para emular presença humana realista no WhatsApp.
@@ -25,9 +40,9 @@ async function simulateTyping(userId: string, phone: string, messageLength: numb
   );
 
   try {
-    await sock.sendPresenceUpdate('composing', jid);
+    await withTimeout(sock.sendPresenceUpdate('composing', jid), 10000, 'sendPresenceUpdate composing');
     await sleep(typingDuration);
-    await sock.sendPresenceUpdate('paused', jid);
+    await withTimeout(sock.sendPresenceUpdate('paused', jid), 10000, 'sendPresenceUpdate paused');
   } catch (_err) {
     // Ignora caso falhe
   }
@@ -78,16 +93,21 @@ async function checkCampaignFlags(campaignId: string): Promise<{
 }
 
 /**
- * Aguarda retomada da campanha se estiver pausada.
+ * Aguarda retomada da campanha se estiver pausada (com teto de 30 minutos).
  */
 async function waitForResume(campaignId: string): Promise<boolean> {
   logger.info({ campaignId }, '⏸️ Campanha pausada, aguardando retomada...');
-  while (true) {
+  let iterations = 0;
+  const MAX_ITERATIONS = 600; // 30 minutos (600 x 3s)
+  while (iterations < MAX_ITERATIONS) {
     await sleep(3000);
+    iterations++;
     const { paused, cancelled } = await checkCampaignFlags(campaignId);
     if (cancelled) return false;
     if (!paused) return true;
   }
+  logger.warn({ campaignId }, '⚠️ Tempo limite de espera de pausa atingido (30 minutos). Encerrando espera.');
+  return false;
 }
 
 /**
@@ -112,7 +132,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
 
   // Emite notificação caso esteja aplicando resfriamento de lote (Batch Cooling)
   if (isBatchCooldown && io) {
-    io.emit(`campaign:${campaignId}:cooldown`, {
+    io.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:cooldown`, {
       message: '🧊 Resfriamento de lote anti-ban ativo (pausa preventiva)...',
       index,
     });
@@ -159,7 +179,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
     });
     const processed = updatedCampaign.sentCount + updatedCampaign.failedCount;
     const percent = Math.min(Math.round((processed / totalContacts) * 100), 100);
-    io?.emit(`campaign:${campaignId}:progress`, {
+    io?.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:progress`, {
       sent: updatedCampaign.sentCount,
       failed: updatedCampaign.failedCount,
       total: totalContacts,
@@ -172,7 +192,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
         where: { id: campaignId },
         data: { status: 'completed', completedAt: new Date() },
       });
-      io?.emit(`campaign:${campaignId}:status`, { status: 'completed' });
+      io?.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:status`, { status: 'completed' });
     }
     return;
   }
@@ -220,7 +240,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
     });
     const processed = updatedCampaign.sentCount + updatedCampaign.failedCount;
     const percent = Math.min(Math.round((processed / totalContacts) * 100), 100);
-    io?.emit(`campaign:${campaignId}:progress`, {
+    io?.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:progress`, {
       sent: updatedCampaign.sentCount,
       failed: updatedCampaign.failedCount,
       total: totalContacts,
@@ -233,7 +253,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
         where: { id: campaignId },
         data: { status: 'completed', completedAt: new Date() },
       });
-      io?.emit(`campaign:${campaignId}:status`, { status: 'completed' });
+      io?.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:status`, { status: 'completed' });
     }
     return;
   }
@@ -245,10 +265,6 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
         status: 'disconnected',
         message: 'WhatsApp desconectado durante o disparo! Reconecte o QR Code.',
       });
-      io.emit(`whatsapp:status:${userId}`, {
-        status: 'disconnected',
-        message: 'WhatsApp desconectado durante o disparo! Reconecte o QR Code.',
-      });
     }
 
     await prisma.campaign.update({
@@ -256,7 +272,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
       data: { status: 'paused' },
     });
 
-    io?.emit(`campaign:${campaignId}:status`, { status: 'paused', reason: 'whatsapp_disconnected' });
+    io?.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:status`, { status: 'paused', reason: 'whatsapp_disconnected' });
 
     let waited = 0;
     while (!isWhatsAppConnected(userId) && waited < 120000) {
@@ -279,7 +295,9 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
   // ── Verificação onWhatsApp prévia ─────────────────────────────────────────
   let targetJid = `${normalizedPhone}@s.whatsapp.net`;
   try {
-    const waCheck = await sock.onWhatsApp(normalizedPhone);
+    logger.info({ campaignId, userId, phone: normalizedPhone, index }, '➡️ onWhatsApp iniciado');
+    const waCheck = await withTimeout(sock.onWhatsApp(normalizedPhone), 20000, 'onWhatsApp');
+    logger.info({ campaignId, userId, phone: normalizedPhone, index }, '✅ onWhatsApp concluído');
     if (waCheck && waCheck.length > 0 && waCheck[0]?.exists) {
       targetJid = waCheck[0].jid;
     } else {
@@ -308,7 +326,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
       const processed = updatedCampaign.sentCount + updatedCampaign.failedCount;
       const percent = Math.round((processed / totalContacts) * 100);
 
-      io?.emit(`campaign:${campaignId}:progress`, {
+      io?.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:progress`, {
         sent: updatedCampaign.sentCount,
         failed: updatedCampaign.failedCount,
         total: totalContacts,
@@ -322,13 +340,13 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
           where: { id: campaignId },
           data: { status: 'completed', completedAt: new Date() },
         });
-        io?.emit(`campaign:${campaignId}:status`, { status: 'completed' });
+        io?.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:status`, { status: 'completed' });
       }
 
       return;
     }
   } catch (err: any) {
-    logger.warn({ err: err.message }, 'Consulta onWhatsApp indisponível, prosseguindo com envio direto');
+    logger.warn({ err: err.message }, 'Consulta onWhatsApp indisponível ou timeout, prosseguindo com envio direto');
   }
 
   // ── Simulação de Digitação Humanizada ──────────────────────────────────
@@ -349,26 +367,85 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
     }
   }
 
-  if (resolvedMediaPath && fs.existsSync(resolvedMediaPath)) {
-    // 📸 Envio com Foto
-    let fileBuffer: any = fs.readFileSync(resolvedMediaPath);
+  try {
+    logger.info({ campaignId, userId, phone: normalizedPhone, index }, '➡️ sendMessage iniciado');
+    if (resolvedMediaPath && fs.existsSync(resolvedMediaPath)) {
+      // 📸 Envio com Foto
+      let fileBuffer: any = fs.readFileSync(resolvedMediaPath);
 
-    if (randomizeMedia !== false) {
-      fileBuffer = randomizeImageBuffer(fileBuffer);
+      if (randomizeMedia !== false) {
+        fileBuffer = randomizeImageBuffer(fileBuffer);
+      }
+
+      const mime = getImageMime(resolvedMediaPath);
+
+      await withTimeout(
+        sock.sendMessage(targetJid, {
+          image: fileBuffer as any,
+          caption: message,
+          mimetype: mime,
+        }),
+        60000,
+        'sendMessage image'
+      );
+      mediaSent = true;
+      logger.info({ campaignId, phone: normalizedPhone }, '📸 Foto enviada com sucesso (Hash único anti-ban)');
+    } else {
+      // 💬 Envio apenas de Texto
+      await withTimeout(
+        sock.sendMessage(targetJid, { text: message }),
+        60000,
+        'sendMessage text'
+      );
+    }
+    logger.info({ campaignId, userId, phone: normalizedPhone, index }, '✅ sendMessage concluído');
+  } catch (err: any) {
+    const duration = Date.now() - startTime;
+    logger.error({ campaignId, phone: normalizedPhone, err: err.message }, '❌ Falha ao enviar mensagem no WhatsApp');
+
+    await prisma.contact.update({
+      where: { id: contactId },
+      data: { status: 'failed', errorMsg: err.message || 'Falha no envio' },
+    });
+
+    await prisma.messageLog.create({
+      data: {
+        campaignId,
+        phone: normalizedPhone,
+        message,
+        mediaSent,
+        status: 'failed',
+        errorMsg: err.message || 'Falha no envio',
+        duration,
+      },
+    });
+
+    const updatedCampaign = await prisma.campaign.update({
+      where: { id: campaignId },
+      data: { failedCount: { increment: 1 } },
+    });
+
+    const processed = updatedCampaign.sentCount + updatedCampaign.failedCount;
+    const percent = Math.round((processed / totalContacts) * 100);
+
+    io?.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:progress`, {
+      sent: updatedCampaign.sentCount,
+      failed: updatedCampaign.failedCount,
+      total: totalContacts,
+      percent,
+      lastPhone: normalizedPhone,
+      lastError: err.message || 'Falha no envio',
+    });
+
+    if (processed >= totalContacts) {
+      await prisma.campaign.update({
+        where: { id: campaignId },
+        data: { status: 'completed', completedAt: new Date() },
+      });
+      io?.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:status`, { status: 'completed' });
     }
 
-    const mime = getImageMime(resolvedMediaPath);
-
-    await sock.sendMessage(targetJid, {
-      image: fileBuffer as any,
-      caption: message,
-      mimetype: mime,
-    });
-    mediaSent = true;
-    logger.info({ campaignId, phone: normalizedPhone }, '📸 Foto enviada com sucesso (Hash único anti-ban)');
-  } else {
-    // 💬 Envio apenas de Texto
-    await sock.sendMessage(targetJid, { text: message });
+    return;
   }
 
   const duration = Date.now() - startTime;
@@ -429,8 +506,8 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
     });
 
     if (io) {
-      io.emit(`campaign:${campaignId}:status`, { status: 'completed' });
-      io.emit(`campaign:${campaignId}:progress`, {
+      io.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:status`, { status: 'completed' });
+      io.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:progress`, {
         sent: updatedCampaign.sentCount,
         failed: updatedCampaign.failedCount,
         total: totalContacts,
@@ -445,7 +522,7 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
 
   // ── Emite progresso em tempo real via Socket.io ─────────────────────────
   if (io) {
-    io.emit(`campaign:${campaignId}:progress`, {
+    io.to(`campaign:${campaignId}`).emit(`campaign:${campaignId}:progress`, {
       sent: updatedCampaign.sentCount,
       failed: updatedCampaign.failedCount,
       total: totalContacts,

@@ -3,15 +3,18 @@
 import { useEffect, useState, useCallback } from 'react';
 import { getSocket } from '@/lib/socket';
 import { getAuthToken } from '@/lib/api';
+import { useAuth } from '@/context/AuthContext';
 
 export interface WhatsAppStatus {
   status: 'disconnected' | 'connecting' | 'qr_ready' | 'connected';
   phone?: string;
   message?: string;
   shouldReconnect?: boolean;
+  userId?: string;
 }
 
 export function useWhatsAppStatus() {
+  const { user } = useAuth();
   const [waStatus, setWaStatus] = useState<WhatsAppStatus>({
     status: 'connecting',
     message: 'Verificando conexão...',
@@ -64,19 +67,28 @@ export function useWhatsAppStatus() {
 
     const socket = getSocket();
 
-    const onStatus = (data: WhatsAppStatus) => {
+    if (user?.id) {
+      socket.emit('user:subscribe', user.id);
+    }
+
+    const onStatus = (data: WhatsAppStatus & { userId?: string }) => {
+      if (data.userId && user?.id && data.userId !== user.id) return;
       setWaStatus(data);
       if (data.status === 'connected') {
         setQrCode(null);
       }
     };
 
-    const onQr = ({ qr }: { qr: string }) => {
-      setQrCode(qr);
+    const onQr = (data: { qr: string; userId?: string }) => {
+      if (data.userId && user?.id && data.userId !== user.id) return;
+      setQrCode(data.qr);
       setWaStatus({ status: 'qr_ready', message: 'Escaneie o QR Code para conectar' });
     };
 
     const onConnect = () => {
+      if (user?.id) {
+        socket.emit('user:subscribe', user.id);
+      }
       fetchStatus();
     };
 
@@ -90,11 +102,14 @@ export function useWhatsAppStatus() {
 
     return () => {
       clearInterval(interval);
+      if (user?.id) {
+        socket.emit('user:unsubscribe', user.id);
+      }
       socket.off('connect', onConnect);
       socket.off('whatsapp:status', onStatus);
       socket.off('whatsapp:qr', onQr);
     };
-  }, [fetchStatus, waStatus.status]);
+  }, [fetchStatus, waStatus.status, user?.id]);
 
   return { waStatus, qrCode, refreshStatus: fetchStatus };
 }
