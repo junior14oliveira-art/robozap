@@ -147,6 +147,15 @@ async function startCampaignRunner(runner: CampaignRunner): Promise<void> {
           { campaignId: runner.campaignId, pendingCount },
           '⏸️ Runner da campanha encerrou com contatos pendentes. Campanha pausada com segurança para permitir retomada.'
         );
+      } else {
+        await prisma.campaign.update({
+          where: { id: runner.campaignId },
+          data: { status: 'completed', completedAt: new Date() },
+        });
+        logger.info(
+          { campaignId: runner.campaignId, userId: runner.userId },
+          '🏆 Todos os contatos foram processados. Campanha concluída com sucesso!'
+        );
       }
     } catch (err: any) {
       logger.warn({ campaignId: runner.campaignId, err: err.message }, 'Aviso ao verificar contatos restantes do runner');

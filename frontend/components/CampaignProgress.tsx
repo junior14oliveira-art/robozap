@@ -47,8 +47,11 @@ export function CampaignProgress({
   const total = progress?.total ?? initialTotal;
   const sent = progress?.sent ?? initialSent;
   const failed = progress?.failed ?? initialFailed;
-  const percent = progress?.percent ?? (total > 0 ? Math.round(((sent + failed) / total) * 100) : 0);
-  const remaining = Math.max(total - sent - failed, 0);
+  const percent =
+    currentStatus === 'completed'
+      ? 100
+      : (progress?.percent ?? (total > 0 ? Math.round(((sent + failed) / total) * 100) : 0));
+  const remaining = currentStatus === 'completed' ? 0 : Math.max(total - sent - failed, 0);
 
   async function handleAction(action: 'pause' | 'resume' | 'cancel') {
     setLoading(action);

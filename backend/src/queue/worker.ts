@@ -593,7 +593,13 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
   const processed = updatedCampaign.sentCount + updatedCampaign.failedCount;
   const percent = Math.round((processed / totalContacts) * 100);
 
-  if (processed >= totalContacts) {
+  const pendingRemaining = await prisma.contact
+    .count({
+      where: { campaignId, status: 'pending' },
+    })
+    .catch(() => 1);
+
+  if (processed >= totalContacts || pendingRemaining === 0) {
     await prisma.campaign.update({
       where: { id: campaignId },
       data: { status: 'completed', completedAt: new Date() },
