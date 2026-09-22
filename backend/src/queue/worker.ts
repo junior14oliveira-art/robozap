@@ -82,14 +82,23 @@ async function checkCampaignFlags(campaignId: string): Promise<{
   paused: boolean;
   cancelled: boolean;
 }> {
-  const campaign = await prisma.campaign.findUnique({
-    where: { id: campaignId },
-    select: { status: true },
-  });
-  return {
-    paused: campaign?.status === 'paused',
-    cancelled: campaign?.status === 'cancelled',
-  };
+  try {
+    const campaign = await withTimeout(
+      prisma.campaign.findUnique({
+        where: { id: campaignId },
+        select: { status: true },
+      }),
+      8000,
+      'checkCampaignFlags'
+    );
+    return {
+      paused: campaign?.status === 'paused',
+      cancelled: campaign?.status === 'cancelled',
+    };
+  } catch (err: any) {
+    logger.warn({ campaignId, err: err.message }, 'Aviso ao verificar flags da campanha');
+    return { paused: false, cancelled: false };
+  }
 }
 
 /**
@@ -437,27 +446,48 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
     const duration = Date.now() - startTime;
     logger.error({ campaignId, phone: normalizedPhone, err: err.message }, '❌ Falha ao enviar mensagem no WhatsApp');
 
-    await prisma.contact.update({
-      where: { id: contactId },
-      data: { status: 'failed', errorMsg: err.message || 'Falha no envio' },
-    });
+    try {
+      await withTimeout(
+        prisma.contact.update({
+          where: { id: contactId },
+          data: { status: 'failed', errorMsg: err.message || 'Falha no envio' },
+        }),
+        10000,
+        'update contact failed'
+      );
+    } catch (_) {}
 
-    await prisma.messageLog.create({
-      data: {
-        campaignId,
-        phone: normalizedPhone,
-        message,
-        mediaSent,
-        status: 'failed',
-        errorMsg: err.message || 'Falha no envio',
-        duration,
-      },
-    });
+    try {
+      await withTimeout(
+        prisma.messageLog.create({
+          data: {
+            campaignId,
+            phone: normalizedPhone,
+            message,
+            mediaSent,
+            status: 'failed',
+            errorMsg: err.message || 'Falha no envio',
+            duration,
+          },
+        }),
+        10000,
+        'create messageLog failed'
+      );
+    } catch (_) {}
 
-    const updatedCampaign = await prisma.campaign.update({
-      where: { id: campaignId },
-      data: { failedCount: { increment: 1 } },
-    });
+    let updatedCampaign: any = null;
+    try {
+      updatedCampaign = await withTimeout(
+        prisma.campaign.update({
+          where: { id: campaignId },
+          data: { failedCount: { increment: 1 } },
+        }),
+        10000,
+        'update campaign failedCount'
+      );
+    } catch (_) {
+      updatedCampaign = { sentCount: 0, failedCount: index + 1 };
+    }
 
     const processed = updatedCampaign.sentCount + updatedCampaign.failedCount;
     const percent = Math.round((processed / totalContacts) * 100);
@@ -485,50 +515,80 @@ export async function executeMessageJob(jobData: MessageJobData): Promise<void> 
   const duration = Date.now() - startTime;
 
   // ── Atualiza status do contato ──────────────────────────────────────────
-  await prisma.contact.update({
-    where: { id: contactId },
-    data: { status: 'sent', sentAt: new Date() },
-  });
+  try {
+    await withTimeout(
+      prisma.contact.update({
+        where: { id: contactId },
+        data: { status: 'sent', sentAt: new Date() },
+      }),
+      12000,
+      'update contact sent'
+    );
+  } catch (e: any) {
+    logger.warn({ contactId, err: e.message }, 'Aviso ao atualizar status do contato para sent');
+  }
 
   // ── Salva log detalhado ────────────────────────────────────────────────
-  await prisma.messageLog.create({
-    data: {
-      campaignId,
-      phone: normalizedPhone,
-      message,
-      mediaSent,
-      status: 'sent',
-      duration,
-    },
-  });
+  try {
+    await withTimeout(
+      prisma.messageLog.create({
+        data: {
+          campaignId,
+          phone: normalizedPhone,
+          message,
+          mediaSent,
+          status: 'sent',
+          duration,
+        },
+      }),
+      12000,
+      'create messageLog sent'
+    );
+  } catch (e: any) {
+    logger.warn({ campaignId, phone: normalizedPhone, err: e.message }, 'Aviso ao salvar messageLog');
+  }
 
   // ── Atualiza histórico permanente no SavedContact do usuário ─────────────
   try {
-    await prisma.savedContact.upsert({
-      where: {
-        userId_phone: {
+    await withTimeout(
+      prisma.savedContact.upsert({
+        where: {
+          userId_phone: {
+            userId,
+            phone: normalizedPhone,
+          },
+        },
+        create: {
           userId,
           phone: normalizedPhone,
+          totalSent: 1,
+          lastSentAt: new Date(),
         },
-      },
-      create: {
-        userId,
-        phone: normalizedPhone,
-        totalSent: 1,
-        lastSentAt: new Date(),
-      },
-      update: {
-        totalSent: { increment: 1 },
-        lastSentAt: new Date(),
-      },
-    });
+        update: {
+          totalSent: { increment: 1 },
+          lastSentAt: new Date(),
+        },
+      }),
+      12000,
+      'upsert savedContact'
+    );
   } catch (_e) {}
 
   // ── Atualiza contadores da campanha ────────────────────────────────────
-  const updatedCampaign = await prisma.campaign.update({
-    where: { id: campaignId },
-    data: { sentCount: { increment: 1 } },
-  });
+  let updatedCampaign: any = null;
+  try {
+    updatedCampaign = await withTimeout(
+      prisma.campaign.update({
+        where: { id: campaignId },
+        data: { sentCount: { increment: 1 } },
+      }),
+      12000,
+      'update campaign sentCount'
+    );
+  } catch (e: any) {
+    logger.warn({ campaignId, err: e.message }, 'Aviso ao incrementar sentCount');
+    updatedCampaign = { sentCount: index + 1, failedCount: 0 };
+  }
 
   const processed = updatedCampaign.sentCount + updatedCampaign.failedCount;
   const percent = Math.round((processed / totalContacts) * 100);

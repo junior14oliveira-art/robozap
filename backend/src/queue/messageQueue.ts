@@ -1,5 +1,6 @@
 import IORedis from 'ioredis';
 import { logger } from '../index';
+import { prisma } from '../prisma';
 import { executeMessageJob } from './worker';
 
 // ── Redis Connection & Version Detection ────────────────────────────────────
@@ -128,6 +129,30 @@ async function startCampaignRunner(runner: CampaignRunner): Promise<void> {
   }
 
   activeRunners.delete(runner.campaignId);
+
+  // Se a fila encerrou mas ainda restarem contatos pendentes (e a campanha não foi cancelada):
+  // atualiza o status para 'paused' para que o usuário veja claramente o botão de retomar
+  // e nunca fique preso em um estado falso de 'Enviando'.
+  if (!runner.cancelled) {
+    try {
+      const pendingCount = await prisma.contact.count({
+        where: { campaignId: runner.campaignId, status: 'pending' },
+      });
+      if (pendingCount > 0) {
+        await prisma.campaign.update({
+          where: { id: runner.campaignId },
+          data: { status: 'paused' },
+        });
+        logger.warn(
+          { campaignId: runner.campaignId, pendingCount },
+          '⏸️ Runner da campanha encerrou com contatos pendentes. Campanha pausada com segurança para permitir retomada.'
+        );
+      }
+    } catch (err: any) {
+      logger.warn({ campaignId: runner.campaignId, err: err.message }, 'Aviso ao verificar contatos restantes do runner');
+    }
+  }
+
   logger.info({ campaignId: runner.campaignId, userId: runner.userId }, '🏁 Runner da campanha finalizado.');
 }
 

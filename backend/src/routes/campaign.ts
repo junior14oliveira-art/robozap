@@ -27,6 +27,36 @@ campaignRouter.use(requireAuth);
  */
 campaignRouter.get('/', async (req: AuthRequest, res: Response) => {
   const userId = req.user!.id;
+
+  // Auto-sincroniza campanhas órfãs (banco diz 'running' mas não há runner ativo em memória)
+  // Permite que o usuário sempre veja o botão 'Continuar do Próximo Contato' sem travar no dashboard
+  try {
+    const runningCampaigns = await prisma.campaign.findMany({
+      where: { userId, status: 'running' },
+      select: { id: true },
+    });
+    for (const rc of runningCampaigns) {
+      if (!hasActiveRunner(rc.id)) {
+        const pendingCount = await prisma.contact.count({
+          where: { campaignId: rc.id, status: 'pending' },
+        });
+        if (pendingCount === 0) {
+          await prisma.campaign.update({
+            where: { id: rc.id },
+            data: { status: 'completed', completedAt: new Date() },
+          });
+        } else {
+          await prisma.campaign.update({
+            where: { id: rc.id },
+            data: { status: 'paused' },
+          });
+        }
+      }
+    }
+  } catch (err: any) {
+    logger.warn({ err: err.message }, 'Aviso ao verificar sincronia de status na listagem de campanhas');
+  }
+
   const campaigns = await prisma.campaign.findMany({
     where: { userId },
     orderBy: { createdAt: 'desc' },

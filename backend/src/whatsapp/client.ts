@@ -17,6 +17,8 @@ import { prisma } from '../prisma';
 import {
   restoreSessionFromDb,
   syncSessionFilesToDb,
+  syncCredsOnly,
+  scheduleSessionSync,
   clearAllAuthKeysFromDb,
 } from './sessionStore';
 
@@ -146,7 +148,8 @@ export async function initWhatsAppClient(
   const { state, saveCreds: baseSaveCreds } = await useMultiFileAuthState(userDir);
   const saveCreds = async () => {
     await baseSaveCreds();
-    syncSessionFilesToDb(userId, userDir).catch(() => {});
+    syncCredsOnly(userId, userDir).catch(() => {});
+    scheduleSessionSync(userId, userDir, 8000);
   };
   const { version } = await fetchLatestBaileysVersion();
 
@@ -217,8 +220,8 @@ export async function initWhatsAppClient(
       const phone = sock.user?.id?.split(':')[0] || 'unknown';
       logger.info({ userId, phone }, '✅ WhatsApp connected successfully for user!');
 
-      // Sincroniza credenciais válidas e chaves com o Supabase
-      syncSessionFilesToDb(userId, userDir).catch(() => {});
+      // Sincroniza credenciais válidas e chaves com o Supabase de forma agendada e não-bloqueante
+      scheduleSessionSync(userId, userDir, 1000);
 
       emitToUser(io, userId, 'whatsapp:status', {
         status: 'connected',
