@@ -80,41 +80,31 @@ campaignRouter.get('/:id', async (req: AuthRequest, res: Response) => {
 });
 
 /**
- * Salva e sincroniza contatos em lotes pequenos para evitar estourar o pool de conexões do Supabase.
+ * Salva e sincroniza contatos em lote no perfil do usuário (SavedContact) em alta performance.
  */
 async function batchUpsertSavedContacts(userId: string, contacts: any[]): Promise<void> {
-  const CHUNK_SIZE = 5;
-  for (let i = 0; i < contacts.length; i += CHUNK_SIZE) {
-    const chunk = contacts.slice(i, i + CHUNK_SIZE);
-    await Promise.all(
-      chunk.map((c) =>
-        prisma.savedContact.upsert({
-          where: {
-            userId_phone: {
-              userId,
-              phone: c.phone,
-            },
-          },
-          create: {
-            userId,
-            phone: c.phone,
-            name: c.name || null,
-            company: c.company || null,
-            variables: JSON.stringify(c),
-          },
-          update: {
-            name: c.name || undefined,
-            company: c.company || undefined,
-            variables: JSON.stringify(c),
-          },
-        })
-      )
-    );
+  if (!contacts || contacts.length === 0) return;
+  try {
+    const data = contacts.map((c) => ({
+      userId,
+      phone: c.phone,
+      name: c.name || null,
+      company: c.company || null,
+      variables: JSON.stringify(c),
+    }));
+
+    // Insere todos em uma única query SQL usando ON CONFLICT DO NOTHING (skipDuplicates)
+    await prisma.savedContact.createMany({
+      data,
+      skipDuplicates: true,
+    });
+  } catch (err: any) {
+    logger.warn({ err: err.message }, 'Aviso ao sincronizar contatos salvos em lote');
   }
 }
 
 /**
- * Cria registros de contatos de uma campanha em lotes pequenos.
+ * Cria registros de contatos de uma campanha em alta performance.
  */
 async function batchCreateContacts(
   campaignId: string,
@@ -124,47 +114,46 @@ async function batchCreateContacts(
   sentTodaySet: Set<string>,
   allowResend: boolean
 ): Promise<any[]> {
-  const results: any[] = [];
-  const CHUNK_SIZE = 5;
+  const contactsData = contacts.map((c: Record<string, string>) => {
+    const isBlacklisted = optOutSet.has(c.phone);
+    const isSentToday = sentTodaySet.has(c.phone);
+    const isAlreadyContacted = !allowResend && alreadySentSet.has(c.phone);
 
-  for (let i = 0; i < contacts.length; i += CHUNK_SIZE) {
-    const chunk = contacts.slice(i, i + CHUNK_SIZE);
-    const chunkResults = await Promise.all(
-      chunk.map((c: Record<string, string>) => {
-        const isBlacklisted = optOutSet.has(c.phone);
-        const isSentToday = sentTodaySet.has(c.phone);
-        const isAlreadyContacted = !allowResend && alreadySentSet.has(c.phone);
+    let status = 'pending';
+    let errorMsg: string | null = null;
 
-        let status = 'pending';
-        let errorMsg: string | null = null;
+    if (isBlacklisted) {
+      status = 'opted_out';
+      errorMsg = 'Opt-Out (solicitou SAIR)';
+    } else if (isSentToday) {
+      // Trava inteligente diária anti-spam (mesmo dia): NUNCA manda 2x no mesmo dia
+      status = 'skipped';
+      errorMsg = 'Já contatado hoje (trava de segurança diária anti-spam)';
+    } else if (isAlreadyContacted) {
+      status = 'skipped';
+      errorMsg = 'Já contatado anteriormente (reenvio desabilitado)';
+    }
 
-        if (isBlacklisted) {
-          status = 'opted_out';
-          errorMsg = 'Opt-Out (solicitou SAIR)';
-        } else if (isSentToday) {
-          // Trava inteligente diária anti-spam (mesmo dia): NUNCA manda 2x no mesmo dia
-          status = 'skipped';
-          errorMsg = 'Já contatado hoje (trava de segurança diária anti-spam)';
-        } else if (isAlreadyContacted) {
-          status = 'skipped';
-          errorMsg = 'Já contatado anteriormente (reenvio desabilitado)';
-        }
+    return {
+      campaignId,
+      phone: c.phone,
+      name: c.name || null,
+      variables: JSON.stringify(c),
+      status,
+      errorMsg,
+    };
+  });
 
-        return prisma.contact.create({
-          data: {
-            campaignId,
-            phone: c.phone,
-            name: c.name || null,
-            variables: JSON.stringify(c),
-            status,
-            errorMsg,
-          },
-        });
-      })
-    );
-    results.push(...chunkResults);
-  }
-  return results;
+  // Cria todos os contatos em uma única query SQL ultra-rápida (milissegundos)
+  await prisma.contact.createMany({
+    data: contactsData,
+  });
+
+  // Retorna os contatos criados da campanha
+  return prisma.contact.findMany({
+    where: { campaignId },
+    orderBy: { id: 'asc' },
+  });
 }
 
 /**
