@@ -156,12 +156,51 @@ export default function CampaignDetailPage() {
           </div>
         )}
 
-        <div>
-          <p className="text-muted-foreground text-sm">Template da mensagem</p>
-          <pre className="mt-1 whitespace-pre-wrap rounded-lg bg-secondary p-3 text-sm font-sans text-foreground">
-            {campaign.messageTemplate}
-          </pre>
-        </div>
+        {(() => {
+          let parsedVariations: string[] | null = null;
+          if (campaign.messageTemplate.startsWith('[') && campaign.messageTemplate.endsWith(']')) {
+            try {
+              const parsed = JSON.parse(campaign.messageTemplate);
+              if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'string') {
+                parsedVariations = parsed;
+              }
+            } catch (_) {}
+          }
+
+          if (parsedVariations && parsedVariations.length > 1) {
+            return (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-muted-foreground text-sm font-medium flex items-center gap-1.5">
+                    <span>Modelos de Mensagem Grok IA ({parsedVariations.length} variações)</span>
+                  </p>
+                  <span className="text-xs text-purple-400 bg-purple-500/15 border border-purple-500/30 px-2 py-0.5 rounded-full font-medium">
+                    🔄 Rodízio Anti-Ban Ativo
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {parsedVariations.map((v, i) => (
+                    <div key={i} className="rounded-lg bg-secondary/70 p-3 text-sm font-sans text-foreground border border-border/50">
+                      <span className="text-[11px] font-bold text-primary block mb-1">Modelo #{i + 1}</span>
+                      <pre className="whitespace-pre-wrap font-sans text-xs leading-relaxed text-foreground/90">
+                        {v}
+                      </pre>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          }
+
+          return (
+            <div>
+              <p className="text-muted-foreground text-sm">Template da mensagem</p>
+              <pre className="mt-1 whitespace-pre-wrap rounded-lg bg-secondary p-3 text-sm font-sans text-foreground">
+                {campaign.messageTemplate}
+              </pre>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Contacts list */}

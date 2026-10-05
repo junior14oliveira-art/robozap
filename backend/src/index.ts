@@ -12,6 +12,7 @@ import { whatsappRouter } from './routes/whatsapp';
 import { campaignRouter } from './routes/campaign';
 import { uploadRouter } from './routes/upload';
 import { templateRouter } from './routes/template';
+import { aiRouter } from './routes/ai';
 import { errorHandler } from './middleware/errorHandler';
 import { restoreAllActiveSessions } from './whatsapp/client';
 import { initWorker } from './queue/worker';
@@ -75,6 +76,7 @@ async function bootstrap() {
   app.use('/api/campaigns', campaignRouter);
   app.use('/api/upload', uploadRouter);
   app.use('/api/templates', templateRouter);
+  app.use('/api/ai', aiRouter);
 
   // Health & Root Status
   app.get('/', (_req, res) => {

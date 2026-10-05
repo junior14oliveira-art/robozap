@@ -226,7 +226,10 @@ export async function enqueueCampaign(params: {
           '🧊 Aplicando resfriamento de lote (Batch Cooling) anti-ban'
         );
       } else {
-        jobDelay = randomDelayMs;
+        // Micro-respiro humano natural a cada 7 contatos (pausa de 15 a 30s)
+        const isMicroBreak = currentIndex > 0 && currentIndex % 7 === 0;
+        const microBreakMs = isMicroBreak ? randomBetween(15000, 30000) : 0;
+        jobDelay = randomDelayMs + microBreakMs;
       }
     }
 

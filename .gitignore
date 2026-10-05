@@ -32,3 +32,14 @@ Thumbs.db
 # Build artifacts
 *.tsbuildinfo
 .turbo/
+
+# Projetos isolados
+binance_spot_bot/
+MoneyPrinterTurbo/
+scratch/
+.agents/
+skills-lock.json
+*.jpg
+*.png
+*.webm
+*.py

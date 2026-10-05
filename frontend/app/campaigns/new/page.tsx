@@ -27,9 +27,15 @@ import {
   UserX,
   FlaskConical,
   Phone,
+  Plus,
+  Trash2,
+  Wand2,
+  BookOpen,
 } from 'lucide-react';
 import { SpreadsheetUpload, type SpreadsheetData } from '@/components/SpreadsheetUpload';
 import { MediaUpload, type UploadedMedia } from '@/components/MediaUpload';
+import { GrokVariationsModal } from '@/components/GrokVariationsModal';
+import { AntiBanGuideModal } from '@/components/AntiBanGuideModal';
 import { apiFetch, BACKEND_URL } from '@/lib/api';
 import { useToast } from '@/components/ui/use-toast';
 import { useWhatsAppStatus } from '@/hooks/useWhatsAppStatus';
@@ -133,6 +139,62 @@ export default function NewCampaignPage() {
     } catch (_) {}
   };
 
+  // Controle de variações de mensagem (Multi-copy Grok & Spintax)
+  const [variations, setVariations] = useState<string[]>(['']);
+  const [activeVariationIndex, setActiveVariationIndex] = useState(0);
+  const [showGrokModal, setShowGrokModal] = useState(false);
+  const [showAntiBanGuide, setShowAntiBanGuide] = useState(false);
+  const [delayPreset, setDelayPreset] = useState<'ultra' | 'moderado' | 'custom'>('ultra');
+
+  const applyPreset = (preset: 'ultra' | 'moderado' | 'custom') => {
+    setDelayPreset(preset);
+    if (preset === 'ultra') {
+      setValue('delayMin', 25);
+      setValue('delayMax', 65);
+      setValue('batchSize', 15);
+      setValue('batchPauseMin', 5);
+    } else if (preset === 'moderado') {
+      setValue('delayMin', 15);
+      setValue('delayMax', 45);
+      setValue('batchSize', 20);
+      setValue('batchPauseMin', 3);
+    }
+  };
+
+  const handleCurrentTextChange = (text: string) => {
+    setVariations((prev) => {
+      const next = [...prev];
+      next[activeVariationIndex] = text;
+      return next;
+    });
+    setValue('messageTemplate', text, { shouldValidate: true });
+  };
+
+  const switchVariationTab = (idx: number) => {
+    setActiveVariationIndex(idx);
+    setValue('messageTemplate', variations[idx] || '', { shouldValidate: true });
+  };
+
+  const addVariation = () => {
+    if (variations.length >= 8) {
+      toast({ title: 'Limite atingido', description: 'Você pode criar até 8 variações de mensagem.' });
+      return;
+    }
+    const next = [...variations, ''];
+    setVariations(next);
+    setActiveVariationIndex(next.length - 1);
+    setValue('messageTemplate', '', { shouldValidate: true });
+  };
+
+  const removeVariation = (indexToRemove: number) => {
+    if (variations.length <= 1) return;
+    const next = variations.filter((_, i) => i !== indexToRemove);
+    setVariations(next);
+    const newIdx = Math.min(activeVariationIndex, next.length - 1);
+    setActiveVariationIndex(newIdx);
+    setValue('messageTemplate', next[newIdx] || '', { shouldValidate: true });
+  };
+
   const {
     register,
     handleSubmit,
@@ -144,10 +206,10 @@ export default function NewCampaignPage() {
     defaultValues: {
       name: '',
       messageTemplate: '',
-      delayMin: 15,
-      delayMax: 45,
-      batchSize: 20,
-      batchPauseMin: 3,
+      delayMin: 25,
+      delayMax: 65,
+      batchSize: 15,
+      batchPauseMin: 5,
       randomizeMedia: true,
       optOutFooter: false,
     },
@@ -176,10 +238,11 @@ export default function NewCampaignPage() {
     return `~${totalSec}s`;
   };
 
-  const previewMessage = (contact?: Record<string, string | undefined>) => {
-    if (!contact || !template) return template;
+  const previewMessage = (contact?: Record<string, string | undefined>, customTemplate?: string) => {
+    const rawTemplate = customTemplate !== undefined ? customTemplate : (variations[activeVariationIndex] || template);
+    if (!contact || !rawTemplate) return rawTemplate || '';
 
-    let message = parseSpintax(template);
+    let message = parseSpintax(rawTemplate);
 
     const normalizedMap = new Map<string, string>();
     for (const [key, val] of Object.entries(contact)) {
@@ -255,18 +318,19 @@ export default function NewCampaignPage() {
   const insertVariable = (varName: string) => {
     const textarea = textareaRef.current;
     const tag = `{{${varName}}}`;
+    const currentVal = variations[activeVariationIndex] || '';
     if (!textarea) {
-      setValue('messageTemplate', template ? `${template} ${tag}` : tag);
+      handleCurrentTextChange(currentVal ? `${currentVal} ${tag}` : tag);
       return;
     }
 
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
-    const before = template.substring(0, start);
-    const after = template.substring(end);
+    const before = currentVal.substring(0, start);
+    const after = currentVal.substring(end);
     const newText = before + tag + after;
 
-    setValue('messageTemplate', newText);
+    handleCurrentTextChange(newText);
     setTimeout(() => {
       textarea.focus();
       textarea.setSelectionRange(start + tag.length, start + tag.length);
@@ -275,7 +339,8 @@ export default function NewCampaignPage() {
 
   const insertSpintaxExample = () => {
     const example = '{Olá|Oi|Bom dia} {{Responsável}}, {tudo bem?|como vai?}';
-    setValue('messageTemplate', template ? `${template}\n${example}` : example);
+    const currentVal = variations[activeVariationIndex] || '';
+    handleCurrentTextChange(currentVal ? `${currentVal}\n${example}` : example);
     toast({
       title: '🔀 Spintax inserido!',
       description: 'O sistema alternará automaticamente entre "Olá", "Oi" e "Bom dia" para cada contato.',
@@ -362,6 +427,14 @@ export default function NewCampaignPage() {
       return;
     }
 
+    const validVariations = variations.map((v) => v.trim()).filter((v) => v.length > 0);
+    const primaryTemplate = validVariations[0] || values.messageTemplate;
+
+    if (!primaryTemplate) {
+      toast({ title: 'Atenção', description: 'Escreva pelo menos um modelo de mensagem.', variant: 'destructive' });
+      return;
+    }
+
     setSubmitting(true);
     try {
       const res = await apiFetch<{ campaign: { id: string } }>('/api/campaigns', {
@@ -370,7 +443,8 @@ export default function NewCampaignPage() {
           name: values.name,
           contacts: spreadsheetData.contacts,
           allowResend,
-          messageTemplate: values.messageTemplate,
+          messageTemplate: primaryTemplate,
+          messageVariations: validVariations.length > 1 ? validVariations : undefined,
           mediaUrl: uploadedMedia ? uploadedMedia.filePath : null,
           mediaType: 'image',
           delayMin: values.delayMin,
@@ -536,29 +610,103 @@ export default function NewCampaignPage() {
               <MediaUpload media={uploadedMedia} onMediaSelected={setUploadedMedia} />
             </div>
 
-            {/* Mensagem / Legenda */}
+            {/* Mensagem / Legenda com Variações Grok IA & Spintax */}
             <div className="rounded-2xl border border-border bg-card p-5 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-border pb-3.5">
                 <div>
                   <label className="text-sm font-semibold text-foreground">
                     {uploadedMedia ? 'Legenda da Foto' : 'Texto da Mensagem'} <span className="text-destructive">*</span>
                   </label>
                   <p className="mt-0.5 text-xs text-muted-foreground">
-                    Use Spintax <code className="bg-secondary px-1 py-0.5 rounded text-primary">{`{Opção 1|Opção 2}`}</code> e variáveis personalizadas
+                    Crie múltiplos modelos com Grok IA para não disparar a mesma mensagem para todos
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowGrokModal(true)}
+                    className="flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-primary px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:opacity-95 hover:scale-[1.02] transition-all"
+                  >
+                    <Sparkles className="h-3.5 w-3.5 text-yellow-300 animate-pulse" />
+                    <span>Gerar com IA Grok</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAntiBanGuide(true)}
+                    className="flex items-center gap-1.5 rounded-xl border border-destructive/30 bg-destructive/10 px-2.5 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/20 transition-all"
+                  >
+                    <ShieldAlert className="h-3.5 w-3.5" />
+                    <span>Guia Anti-Ban</span>
+                  </button>
                   <button
                     type="button"
                     onClick={insertSpintaxExample}
-                    className="flex items-center gap-1 text-xs text-primary hover:underline font-medium"
+                    className="flex items-center gap-1 text-xs text-primary hover:underline font-medium px-1 py-1"
                     title="Inserir exemplo de variação de texto para evitar mensagens idênticas"
                   >
                     <Shuffle className="h-3 w-3" />
                     + Spintax
                   </button>
-                  <span className="text-xs text-muted-foreground font-mono">{template.length}/4000</span>
                 </div>
+              </div>
+
+              {/* Variation Tabs */}
+              <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1">
+                <div className="flex items-center gap-1.5 flex-nowrap">
+                  {variations.map((_, i) => (
+                    <div key={i} className="flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => switchVariationTab(i)}
+                        className={cn(
+                          'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all whitespace-nowrap',
+                          activeVariationIndex === i
+                            ? 'bg-primary text-primary-foreground shadow-sm'
+                            : 'bg-secondary/70 text-muted-foreground hover:bg-secondary hover:text-foreground'
+                        )}
+                      >
+                        <span>Modelo {i + 1}</span>
+                        {variations[i]?.trim().length > 0 && (
+                          <span
+                            className={cn(
+                              'h-1.5 w-1.5 rounded-full',
+                              activeVariationIndex === i ? 'bg-primary-foreground' : 'bg-whatsapp'
+                            )}
+                          />
+                        )}
+                      </button>
+                      {variations.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeVariation(i);
+                          }}
+                          className="ml-0.5 p-1 text-muted-foreground hover:text-destructive rounded transition-colors"
+                          title={`Excluir Modelo ${i + 1}`}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+
+                  {variations.length < 6 && (
+                    <button
+                      type="button"
+                      onClick={addVariation}
+                      className="flex items-center gap-1 rounded-lg border border-dashed border-border px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:border-primary/50 hover:text-primary transition-all whitespace-nowrap"
+                      title="Adicionar mais um modelo de mensagem para rodízio"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>+ Modelo</span>
+                    </button>
+                  )}
+                </div>
+
+                <span className="text-xs text-muted-foreground font-mono shrink-0">
+                  {(variations[activeVariationIndex] || '').length}/4000
+                </span>
               </div>
 
               {/* Dynamic Variable Insertion Pills */}
@@ -586,34 +734,110 @@ export default function NewCampaignPage() {
               )}
 
               {/* Textarea */}
-              {(() => {
-                const { ref, ...rest } = register('messageTemplate');
-                return (
-                  <textarea
-                    {...rest}
-                    ref={(e) => {
-                      ref(e);
-                      textareaRef.current = e;
-                    }}
-                    rows={7}
-                    placeholder={`{Olá|Oi|Bom dia} {{Responsável}}! {Tudo bem?|Como vai?}\n\nVi que você atua na {{Nome da Empresa}}.\n\nTemos ofertas imperdíveis de servidores e switches pronta entrega!\n\nSegue a foto do lote anexo.`}
-                    className={cn(
-                      'w-full rounded-xl border bg-secondary/40 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all resize-y font-sans',
-                      errors.messageTemplate ? 'border-destructive' : 'border-border'
-                    )}
-                  />
-                );
-              })()}
-              {errors.messageTemplate && (
+              <textarea
+                value={variations[activeVariationIndex] || ''}
+                onChange={(e) => handleCurrentTextChange(e.target.value)}
+                ref={textareaRef}
+                rows={7}
+                placeholder={`{Olá|Oi|Bom dia} {{Responsável}}! {Tudo bem?|Como vai?}\n\nVi que você atua na {{Nome da Empresa}}.\n\nTemos ofertas imperdíveis de servidores e switches pronta entrega!\n\nSegue a foto do lote anexo.`}
+                className={cn(
+                  'w-full rounded-xl border bg-secondary/40 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all resize-y font-sans',
+                  errors.messageTemplate && (!variations[0] || variations[0].trim().length === 0)
+                    ? 'border-destructive'
+                    : 'border-border'
+                )}
+              />
+              {errors.messageTemplate && (!variations[0] || variations[0].trim().length === 0) && (
                 <p className="text-xs text-destructive">{errors.messageTemplate.message}</p>
+              )}
+
+              {/* Info Rodízio Ativo */}
+              {variations.length > 1 && (
+                <div className="flex items-center gap-2 rounded-xl bg-purple-500/10 border border-purple-500/25 p-3 text-xs text-foreground">
+                  <Shuffle className="h-4 w-4 text-purple-400 shrink-0" />
+                  <span>
+                    <strong>Rodízio Inteligente Ativo:</strong> Você configurou <strong>{variations.length} modelos</strong>. O sistema distribuirá alternadamente (Round-Robin) entre seus contatos, impedindo que a Meta detecte o mesmo hash textual repetitivo!
+                  </span>
+                </div>
               )}
             </div>
 
             {/* 🛡️ CENTRAL DE BLINDAGEM ANTI-BAN */}
             <div className="rounded-2xl border border-whatsapp/30 bg-card p-6 space-y-5 shadow-sm">
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="h-5 w-5 text-whatsapp" />
-                <h3 className="font-bold text-foreground">Central de Blindagem Anti-Ban (Regras Anti-Spam)</h3>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="h-5 w-5 text-whatsapp" />
+                  <h3 className="font-bold text-foreground">Central de Blindagem Anti-Ban (Regras Anti-Spam)</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAntiBanGuide(true)}
+                  className="text-xs text-primary hover:underline font-semibold flex items-center gap-1"
+                >
+                  <BookOpen className="h-3.5 w-3.5" />
+                  Guia Completo
+                </button>
+              </div>
+
+              {/* Delay Presets Selector */}
+              <div className="space-y-2">
+                <label className="text-xs font-semibold text-foreground">
+                  Perfil de Segurança e Velocidade:
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => applyPreset('ultra')}
+                    className={cn(
+                      'rounded-xl border p-3 text-left transition-all',
+                      delayPreset === 'ultra'
+                        ? 'border-emerald-500 bg-emerald-500/15 shadow-sm ring-1 ring-emerald-500/30'
+                        : 'border-border bg-secondary/30 hover:bg-secondary/50'
+                    )}
+                  >
+                    <p className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                      <span>🟢 Ultra Seguro (Recomendado)</span>
+                    </p>
+                    <p className="text-[11px] text-muted-foreground mt-1">25s – 65s · Lote 15 · Pausa 5m</p>
+                    <p className="text-[10px] text-emerald-400/80 font-medium mt-1">
+                      Ideal para evitar bans e chips novos
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => applyPreset('moderado')}
+                    className={cn(
+                      'rounded-xl border p-3 text-left transition-all',
+                      delayPreset === 'moderado'
+                        ? 'border-yellow-500 bg-yellow-500/15 shadow-sm ring-1 ring-yellow-500/30'
+                        : 'border-border bg-secondary/30 hover:bg-secondary/50'
+                    )}
+                  >
+                    <p className="text-xs font-bold text-yellow-400 flex items-center gap-1.5">
+                      <span>🟡 Moderado</span>
+                    </p>
+                    <p className="text-[11px] text-muted-foreground mt-1">15s – 45s · Lote 20 · Pausa 3m</p>
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      Chips aquecidos &gt; 30 dias de uso
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setDelayPreset('custom')}
+                    className={cn(
+                      'rounded-xl border p-3 text-left transition-all',
+                      delayPreset === 'custom'
+                        ? 'border-primary bg-primary/15 shadow-sm ring-1 ring-primary/30'
+                        : 'border-border bg-secondary/30 hover:bg-secondary/50'
+                    )}
+                  >
+                    <p className="text-xs font-bold text-foreground">⚙️ Personalizado</p>
+                    <p className="text-[11px] text-muted-foreground mt-1">Ajuste manual de parâmetros</p>
+                    <p className="text-[10px] text-muted-foreground mt-1">Definir tempos nos campos abaixo</p>
+                  </button>
+                </div>
               </div>
 
               {/* Delay entre disparos */}
@@ -873,20 +1097,53 @@ export default function NewCampaignPage() {
               </div>
             )}
 
+            {/* ROTAÇÃO MULTI-MODELOS GROK */}
+            {(() => {
+              const validVars = variations.map((v) => v.trim()).filter((v) => v.length > 0);
+              if (validVars.length <= 1) return null;
+              return (
+                <div className="rounded-2xl border border-purple-500/30 bg-purple-500/10 p-5 space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-purple-500/20 text-purple-400 shrink-0">
+                      <Sparkles className="h-5 w-5" />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-sm font-bold text-foreground">
+                          🔄 Rodízio Multi-Mensagens Ativo ({validVars.length} Modelos Grok IA)
+                        </h4>
+                        <span className="text-[10px] font-semibold text-purple-400 px-2 py-0.5 rounded-full bg-purple-500/20">
+                          Anti-Hash Ativo
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        Seus contatos receberão mensagens diferentes alternadas em fila (Contato #1 recebe Modelo 1, Contato #2 recebe Modelo 2...). Isso quebra o padrão de disparos em lote e protege seu chip contra o algoritmo anti-spam da Meta.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Stats Overview */}
             <div className="rounded-2xl border border-border bg-card divide-y divide-border overflow-hidden">
-              <div className="grid grid-cols-3 divide-x divide-border">
+              <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-border">
                 {[
                   {
                     icon: Users,
                     label:
                       !allowResend && contactAnalysis && contactAnalysis.alreadyContactedCount > 0
-                        ? `${contactAnalysis.alreadyContactedCount} já contatados (preservados)`
+                        ? `${contactAnalysis.alreadyContactedCount} já contatados`
                         : 'Contatos a Disparar',
                     value:
                       !allowResend && contactAnalysis && contactAnalysis.alreadyContactedCount > 0
                         ? `${effectiveToSend} novos`
                         : spreadsheetData.contacts.length,
+                  },
+                  {
+                    icon: Shuffle,
+                    label: 'Modelos de Mensagem',
+                    value: `${variations.filter((v) => v.trim().length > 0).length || 1} modelo(s)`,
                   },
                   {
                     icon: Clock,
@@ -901,8 +1158,8 @@ export default function NewCampaignPage() {
                 ].map(({ icon: Icon, label, value }) => (
                   <div key={label} className="p-4 text-center">
                     <Icon className="mx-auto mb-1.5 h-5 w-5 text-primary" />
-                    <p className="text-xl font-bold text-foreground">{value}</p>
-                    <p className="text-xs text-muted-foreground">{label}</p>
+                    <p className="text-lg sm:text-xl font-bold text-foreground">{value}</p>
+                    <p className="text-[11px] sm:text-xs text-muted-foreground">{label}</p>
                   </div>
                 ))}
               </div>
@@ -922,20 +1179,48 @@ export default function NewCampaignPage() {
               </div>
 
               {/* Message Sample Preview */}
-              <div className="p-5 space-y-2">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                  Prévia final da mensagem (Contato #1):
-                </p>
-                <div className="rounded-xl bg-secondary/50 p-4 space-y-2">
-                  {uploadedMedia && (
-                    <div className="flex items-center gap-2 text-xs text-whatsapp font-medium">
-                      <ImageIcon className="h-4 w-4" />
-                      <span>Foto inclusa: {uploadedMedia.filename}</span>
-                    </div>
-                  )}
-                  <p className="whitespace-pre-wrap text-sm text-foreground leading-relaxed">
-                    {previewMessage(spreadsheetData.preview[0] as Record<string, string | undefined>)}
+              <div className="p-5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Prévia das mensagens que serão enviadas:
                   </p>
+                  {variations.filter((v) => v.trim().length > 0).length > 1 && (
+                    <span className="text-xs text-purple-400 font-medium">
+                      Alternadas automaticamente contato a contato
+                    </span>
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  {variations
+                    .map((v, idx) => ({ text: v.trim(), idx }))
+                    .filter((item) => item.text.length > 0)
+                    .map(({ text, idx }) => (
+                      <div key={idx} className="rounded-xl bg-secondary/50 p-4 space-y-2 border border-border/50">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-bold text-primary flex items-center gap-1.5">
+                            <span>Modelo {idx + 1}</span>
+                            {idx === 0 && (
+                              <span className="text-[10px] bg-primary/20 text-primary px-1.5 py-0.2 rounded font-normal">
+                                Principal
+                              </span>
+                            )}
+                          </span>
+                          <span className="text-muted-foreground font-mono text-[11px]">
+                            Recebido pelo Contato #{idx + 1}
+                          </span>
+                        </div>
+                        {uploadedMedia && idx === 0 && (
+                          <div className="flex items-center gap-2 text-xs text-whatsapp font-medium">
+                            <ImageIcon className="h-4 w-4" />
+                            <span>Foto inclusa: {uploadedMedia.filename}</span>
+                          </div>
+                        )}
+                        <p className="whitespace-pre-wrap text-sm text-foreground leading-relaxed">
+                          {previewMessage(spreadsheetData.preview[0] as Record<string, string | undefined>, text)}
+                        </p>
+                      </div>
+                    ))}
                 </div>
               </div>
             </div>
@@ -1067,6 +1352,37 @@ export default function NewCampaignPage() {
           </div>
         )}
       </form>
+
+      {/* Modal de Variações com IA Grok */}
+      <GrokVariationsModal
+        isOpen={showGrokModal}
+        onClose={() => setShowGrokModal(false)}
+        baseMessage={variations[activeVariationIndex] || ''}
+        onApplyVariations={(newVars) => {
+          setVariations(newVars);
+          setActiveVariationIndex(0);
+          setValue('messageTemplate', newVars[0] || '', { shouldValidate: true });
+          setShowGrokModal(false);
+          toast({
+            title: '✨ Variações Grok aplicadas com sucesso!',
+            description: `${newVars.length} modelos de mensagem configurados para rodízio automático.`,
+          });
+        }}
+        onApplySpintax={(spintax) => {
+          handleCurrentTextChange(spintax);
+          setShowGrokModal(false);
+          toast({
+            title: '🔀 Spintax aplicado com sucesso!',
+            description: 'Variações dinâmicas de vocabulário inseridas no modelo atual.',
+          });
+        }}
+      />
+
+      {/* Modal do Guia Anti-Ban & Recuperação de Chip */}
+      <AntiBanGuideModal
+        isOpen={showAntiBanGuide}
+        onClose={() => setShowAntiBanGuide(false)}
+      />
     </div>
   );
 }

@@ -308,6 +308,7 @@ campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
       name,
       contacts,
       messageTemplate,
+      messageVariations,
       mediaUrl,
       mediaType = 'image',
       delayMin = 15,
@@ -319,8 +320,18 @@ campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
       allowResend = false,
     } = req.body;
 
-    if (!name || !contacts || !messageTemplate) {
-      return res.status(400).json({ error: 'Nome, contatos e modelo de mensagem são obrigatórios.' });
+    let templatesToUse: string[] = [];
+    if (Array.isArray(messageVariations) && messageVariations.length > 0) {
+      templatesToUse = messageVariations
+        .map((t: any) => (typeof t === 'string' ? t.trim() : ''))
+        .filter((t: string) => t.length > 0);
+    }
+    if (templatesToUse.length === 0 && messageTemplate && typeof messageTemplate === 'string' && messageTemplate.trim().length > 0) {
+      templatesToUse = [messageTemplate.trim()];
+    }
+
+    if (!name || !contacts || templatesToUse.length === 0) {
+      return res.status(400).json({ error: 'Nome, contatos e pelo menos um modelo de mensagem são obrigatórios.' });
     }
 
     if (!Array.isArray(contacts) || contacts.length === 0) {
@@ -394,11 +405,15 @@ campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
     const sentTodaySet = new Set(sentTodayContacts.map((s) => s.phone));
 
     // 6. Create campaign
+    const savedTemplate = templatesToUse.length > 1
+      ? JSON.stringify(templatesToUse)
+      : templatesToUse[0];
+
     const campaign = await prisma.campaign.create({
       data: {
         userId,
         name,
-        messageTemplate,
+        messageTemplate: savedTemplate,
         mediaUrl: mediaUrl || null,
         mediaType: mediaUrl ? mediaType : null,
         delayMin: safeDelayMin,
@@ -428,13 +443,14 @@ campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
     const skippedCount = createdContacts.filter((c) => c.status === 'skipped').length;
     const optedOutCount = createdContacts.filter((c) => c.status === 'opted_out').length;
 
-    // Build personalized messages
-    const jobContacts = activeContacts.map((contact) => {
+    // Build personalized messages with Round-Robin variation rotation
+    const jobContacts = activeContacts.map((contact, idx) => {
       const rawContact = deduplicatedContacts.find((c: any) => c.phone === contact.phone) || {};
+      const chosenTemplate = templatesToUse[idx % templatesToUse.length];
       return {
         id: contact.id,
         phone: contact.phone,
-        message: processTemplate(messageTemplate, rawContact, { optOutFooter }),
+        message: processTemplate(chosenTemplate, rawContact, { optOutFooter }),
         mediaUrl: mediaUrl || null,
         mediaType,
         randomizeMedia,
@@ -585,7 +601,15 @@ campaignRouter.post('/:id/resume', async (req: AuthRequest, res: Response) => {
         '▶️ Retomando campanha a partir do próximo contato pendente no banco de dados'
       );
 
-      const jobContacts = pendingContacts.map((contact) => {
+      let resumeTemplates: string[] = [campaign.messageTemplate];
+      try {
+        const parsed = JSON.parse(campaign.messageTemplate);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          resumeTemplates = parsed;
+        }
+      } catch (_) {}
+
+      const jobContacts = pendingContacts.map((contact, idx) => {
         let rawContact: any = {};
         try {
           rawContact = contact.variables ? JSON.parse(contact.variables) : {};
@@ -593,10 +617,12 @@ campaignRouter.post('/:id/resume', async (req: AuthRequest, res: Response) => {
         if (!rawContact.name && contact.name) rawContact.name = contact.name;
         if (!rawContact.phone && contact.phone) rawContact.phone = contact.phone;
 
+        const chosenTemplate = resumeTemplates[idx % resumeTemplates.length];
+
         return {
           id: contact.id,
           phone: contact.phone,
-          message: processTemplate(campaign.messageTemplate, rawContact, {
+          message: processTemplate(chosenTemplate, rawContact, {
             optOutFooter: campaign.optOutFooter,
           }),
           mediaUrl: campaign.mediaUrl,

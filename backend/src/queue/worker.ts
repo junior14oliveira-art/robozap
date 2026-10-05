@@ -26,23 +26,48 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 /**
- * Simula indicador de digitação com duração proporcional
- * para emular presença humana realista no WhatsApp.
+ * Simula indicador de digitação realista e presença humana no WhatsApp:
+ * 1. Abre a conversa (status 'available' com tempo de leitura)
+ * 2. Digitação em rajadas humanas ('composing' -> pausa para pensar 'paused' -> 'composing')
+ * 3. Micro-pausa antes do disparo final
  */
 async function simulateTyping(userId: string, phone: string, messageLength: number): Promise<void> {
   const sock = getWASocket(userId);
   if (!sock) return;
 
   const jid = `${phone}@s.whatsapp.net`;
-  const typingDuration = Math.min(
-    Math.max(messageLength * 45, 1800), // ~45ms por caractere, mínimo 1.8s
-    7500 // máximo 7.5s
-  );
 
   try {
-    await withTimeout(sock.sendPresenceUpdate('composing', jid), 10000, 'sendPresenceUpdate composing');
-    await sleep(typingDuration);
-    await withTimeout(sock.sendPresenceUpdate('paused', jid), 10000, 'sendPresenceUpdate paused');
+    // 1. Simula abrir a conversa e ler/visualizar (1.2s a 2.5s)
+    await withTimeout(sock.sendPresenceUpdate('available'), 5000, 'sendPresenceUpdate available').catch(() => {});
+    await sleep(Math.floor(Math.random() * 1300) + 1200);
+
+    // 2. Calcula tempo de digitação com variação humana (+/- 20% jitter)
+    const baseDuration = Math.min(Math.max(messageLength * 40, 1800), 8500);
+    const jitter = Math.floor((Math.random() * 0.4 - 0.2) * baseDuration);
+    const typingDuration = Math.max(baseDuration + jitter, 1500);
+
+    // Se a mensagem for mais longa, simula digitação em duas rajadas com pausa no meio
+    if (messageLength > 80 && typingDuration > 3500) {
+      const part1 = Math.floor(typingDuration * 0.55);
+      const midPause = Math.floor(Math.random() * 700) + 600; // pausa de 600 a 1300ms pensando
+      const part2 = typingDuration - part1;
+
+      await withTimeout(sock.sendPresenceUpdate('composing', jid), 8000, 'sendPresenceUpdate composing 1').catch(() => {});
+      await sleep(part1);
+      await withTimeout(sock.sendPresenceUpdate('paused', jid), 8000, 'sendPresenceUpdate paused mid').catch(() => {});
+      await sleep(midPause);
+      await withTimeout(sock.sendPresenceUpdate('composing', jid), 8000, 'sendPresenceUpdate composing 2').catch(() => {});
+      await sleep(part2);
+      await withTimeout(sock.sendPresenceUpdate('paused', jid), 8000, 'sendPresenceUpdate paused final').catch(() => {});
+    } else {
+      await withTimeout(sock.sendPresenceUpdate('composing', jid), 8000, 'sendPresenceUpdate composing').catch(() => {});
+      await sleep(typingDuration);
+      await withTimeout(sock.sendPresenceUpdate('paused', jid), 8000, 'sendPresenceUpdate paused').catch(() => {});
+    }
+
+    // Micro-pausa de 300 a 800ms antes do clique de envio
+    await sleep(Math.floor(Math.random() * 500) + 300);
   } catch (_err) {
     // Ignora caso falhe
   }
