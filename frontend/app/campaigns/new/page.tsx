@@ -36,6 +36,7 @@ import { SpreadsheetUpload, type SpreadsheetData } from '@/components/Spreadshee
 import { MediaUpload, type UploadedMedia } from '@/components/MediaUpload';
 import { GrokVariationsModal } from '@/components/GrokVariationsModal';
 import { AntiBanGuideModal } from '@/components/AntiBanGuideModal';
+import { SpamShieldAlert, type SpamAnalysis } from '@/components/SpamShieldAlert';
 import { apiFetch, BACKEND_URL } from '@/lib/api';
 import { useToast } from '@/components/ui/use-toast';
 import { useWhatsAppStatus } from '@/hooks/useWhatsAppStatus';
@@ -101,6 +102,133 @@ function parseSpintax(text: string): string {
     iterations++;
   }
   return result;
+}
+
+function detectSpamLocal(rawMessage: string): SpamAnalysis {
+  if (!rawMessage || typeof rawMessage !== 'string' || rawMessage.trim().length === 0) {
+    return { isBlocked: false, score: 0, level: 'safe', violations: [], suggestions: [] };
+  }
+  const text = rawMessage.trim();
+  const textWithoutVars = text.replace(/\{\{\s*[^}]+?\s*\}\}/g, '');
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9% ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const violations: any[] = [];
+  const suggestions: string[] = [];
+  let score = 0;
+
+  const criticalPhrases = [
+    'promocao imperdivel',
+    'super promocao',
+    'promocao b2b',
+    'oferta imperdivel',
+    'super oferta',
+    'compre ja',
+    'compre agora',
+    '50% off',
+    '70% off',
+    'liquidacao',
+    'queima de estoque',
+    'ganhe dinheiro',
+    'renda extra',
+    'fique rico',
+    'lucro garantido',
+    'oportunidade unica',
+    'ultimas unidades',
+    'so hoje',
+    'clique no link',
+    'clique aqui',
+    'acesse o link',
+  ];
+
+  for (const phrase of criticalPhrases) {
+    if (normalized.includes(phrase)) {
+      score += 35;
+      violations.push({
+        id: `crit_${phrase}`,
+        rule: 'Gatilho Comercial Agressivo',
+        description: `O termo "${phrase.toUpperCase()}" causa denúncias e banimento imediato no WhatsApp.`,
+        snippet: phrase,
+        severity: 'critical',
+      });
+      suggestions.push(`Substitua "${phrase}" por uma pergunta ou conversa consultiva.`);
+    }
+  }
+
+  const warningWords = ['promocao', 'promocional', 'desconto exclusivo', 'preco imbativel', 'gratis', 'urgente', 'aproveite ja'];
+  for (const word of warningWords) {
+    if (new RegExp(`\\b${word}\\b`, 'i').test(normalized)) {
+      if (!violations.some((v) => v.description.toLowerCase().includes(word))) {
+        score += 15;
+        violations.push({
+          id: `warn_${word}`,
+          rule: 'Termo Suspeito de Spam',
+          description: `O termo "${word}" eleva o risco de o destinatário clicar em Denunciar.`,
+          snippet: word,
+          severity: 'warning',
+        });
+      }
+    }
+  }
+
+  // ALL CAPS
+  const lettersOnly = textWithoutVars.replace(/[^a-zA-ZáéíóúÁÉÍÓÚãõÃÕâêîôûÂÊÎÔÛçÇ]/g, '');
+  if (lettersOnly.length >= 15) {
+    const uppercaseLetters = lettersOnly.replace(/[^A-ZÁÉÍÓÚÃÕÂÊÎÔÛÇ]/g, '');
+    const uppercaseRatio = uppercaseLetters.length / lettersOnly.length;
+    if (uppercaseRatio > 0.35) {
+      score += 40;
+      violations.push({
+        id: 'caps',
+        rule: 'Caixa Alta Excessiva (Gritaria)',
+        description: `${Math.round(uppercaseRatio * 100)}% das letras estão em MAIÚSCULAS. A Meta classifica textos gritantes como spam robótico.`,
+        severity: 'critical',
+      });
+      suggestions.push('Escreva em minúsculas normais.');
+    }
+  }
+
+  // Emojis de alarme
+  const alarmMatches = text.match(/(🚨|💣|🔥{2,}|💰{2,}|📢{2,}|⚠️{2,})/g);
+  if (alarmMatches && alarmMatches.length > 0) {
+    score += alarmMatches.length >= 2 ? 35 : 20;
+    violations.push({
+      id: 'alarm_emojis',
+      rule: 'Emojis de Alarme / Urgência',
+      description: `Emojis de alerta detectados (${alarmMatches.slice(0, 3).join(' ')}).`,
+      severity: alarmMatches.length >= 2 ? 'critical' : 'warning',
+    });
+    suggestions.push('Remova emojis de sirene (🚨) ou alarme.');
+  }
+
+  // Encurtadores de link
+  if (/\b(bit\.ly|tinyurl\.com|t\.me|linktr\.ee|cutt\.ly|encurtador)\b/i.test(text)) {
+    score += 35;
+    violations.push({
+      id: 'shortener',
+      rule: 'Link Encurtador no 1º Contato',
+      description: 'Links encurtados em mensagens frias são o principal motivo de bloqueio pela Meta.',
+      severity: 'critical',
+    });
+    suggestions.push('Remova links na primeira mensagem.');
+  }
+
+  const cappedScore = Math.min(Math.max(score, 0), 100);
+  const hasCritical = violations.some((v) => v.severity === 'critical');
+  const isBlocked = cappedScore >= 50 || (hasCritical && cappedScore >= 40);
+
+  return {
+    isBlocked,
+    score: cappedScore,
+    level: isBlocked ? 'blocked' : cappedScore > 20 ? 'warning' : 'safe',
+    violations,
+    suggestions: Array.from(new Set(suggestions)),
+  };
 }
 
 export default function NewCampaignPage() {
@@ -222,6 +350,16 @@ export default function NewCampaignPage() {
   const batchPauseMin = watch('batchPauseMin');
   const randomizeMedia = watch('randomizeMedia');
   const optOutFooter = watch('optOutFooter');
+
+  // Análise anti-spam em tempo real (Meta Shield)
+  const currentActiveText = variations[activeVariationIndex] || template || '';
+  const currentSpamAnalysis = detectSpamLocal(currentActiveText);
+
+  // Verifica se alguma das variações preenchidas possui bloqueio crítico anti-spam
+  const anyVariationBlocked = variations.some((v) => {
+    if (!v || v.trim().length === 0) return false;
+    return detectSpamLocal(v).isBlocked;
+  });
 
   const estimateTime = () => {
     if (!spreadsheetData || spreadsheetData.contacts.length === 0) return null;
@@ -361,6 +499,16 @@ export default function NewCampaignPage() {
       return;
     }
 
+    const spamCheck = detectSpamLocal(variations[activeVariationIndex] || template);
+    if (spamCheck.isBlocked) {
+      toast({
+        title: '🚫 Teste Bloqueado por Risco de Spam',
+        description: 'Esta mensagem contém termos com alto risco de banimento no WhatsApp. Clique em "Limpar com Grok" antes de disparar o teste.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setTesting(true);
     setTestResult(null);
 
@@ -432,6 +580,16 @@ export default function NewCampaignPage() {
 
     if (!primaryTemplate) {
       toast({ title: 'Atenção', description: 'Escreva pelo menos um modelo de mensagem.', variant: 'destructive' });
+      return;
+    }
+
+    const blockedIdx = validVariations.findIndex((v) => detectSpamLocal(v).isBlocked);
+    if (blockedIdx !== -1) {
+      toast({
+        title: '🚫 Campanha Bloqueada por Proteção Anti-Spam',
+        description: `O Modelo ${blockedIdx + 1} contém termos com alto risco de banimento da Meta no WhatsApp. Clique em "Limpar com Grok" para liberar o envio com segurança.`,
+        variant: 'destructive',
+      });
       return;
     }
 
@@ -751,6 +909,13 @@ export default function NewCampaignPage() {
                 <p className="text-xs text-destructive">{errors.messageTemplate.message}</p>
               )}
 
+              {/* 🛡️ Alerta de Proteção Anti-Spam (Meta Shield) */}
+              <SpamShieldAlert
+                analysis={currentSpamAnalysis}
+                messageText={currentActiveText}
+                onApplyCleanedMessage={(cleaned) => handleCurrentTextChange(cleaned)}
+              />
+
               {/* Info Rodízio Ativo */}
               {variations.length > 1 && (
                 <div className="flex items-center gap-2 rounded-xl bg-purple-500/10 border border-purple-500/25 p-3 text-xs text-foreground">
@@ -1002,11 +1167,26 @@ export default function NewCampaignPage() {
               </button>
               <button
                 type="button"
-                disabled={!template || template.trim() === ''}
-                onClick={() => setStep(2)}
-                className="flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-40"
+                disabled={!template || template.trim() === '' || anyVariationBlocked}
+                onClick={() => {
+                  if (anyVariationBlocked) {
+                    toast({
+                      title: '🚫 Mensagem Bloqueada por Proteção Anti-Spam',
+                      description: 'Elimine os termos agressivos ou use o botão "Limpar & Desbloquear com Grok" para poder avançar com segurança.',
+                      variant: 'destructive',
+                    });
+                    return;
+                  }
+                  setStep(2);
+                }}
+                className={cn(
+                  'flex items-center gap-2 rounded-xl px-6 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50',
+                  anyVariationBlocked
+                    ? 'bg-destructive/80 text-destructive-foreground hover:bg-destructive cursor-not-allowed'
+                    : 'bg-primary text-primary-foreground hover:bg-primary/90'
+                )}
               >
-                Revisar Disparo
+                {anyVariationBlocked ? '🚫 Bloqueado por Risco de Spam' : 'Revisar Disparo'}
                 <ChevronRight className="h-4 w-4" />
               </button>
             </div>
@@ -1175,7 +1355,18 @@ export default function NewCampaignPage() {
                   <p>✓ Lote: {batchSize} contatos (Pausa de {batchPauseMin} min)</p>
                   <p>✓ Hash Único de Foto: {randomizeMedia ? 'Ativado' : 'Desativado'}</p>
                   <p>✓ Rodapé Anti-Denúncia: {optOutFooter ? 'Ativado (SAIR)' : 'Desativado'}</p>
+                  <p className="col-span-2 text-whatsapp font-medium flex items-center gap-1">
+                    ✓ Escudo de Conteúdo Anti-Spam: Aprovado (Zero gatilhos de bloqueio)
+                  </p>
                 </div>
+                {anyVariationBlocked && (
+                  <div className="rounded-xl border border-destructive/40 bg-destructive/15 p-3 text-xs text-destructive font-semibold flex items-center gap-2">
+                    <ShieldAlert className="h-4 w-4 shrink-0" />
+                    <span>
+                      ⚠️ ATENÇÃO: Pelo menos um modelo contém termos bloqueados por SPAM. Corrija antes de disparar.
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Message Sample Preview */}

@@ -3,8 +3,10 @@ import { requireAuth, AuthRequest } from '../middleware/auth';
 import {
   generateVariationsWithGrok,
   generateSpintaxWithGrok,
+  humanizeAndCleanSpamWithGrok,
   getGrokApiKey,
 } from '../services/grokService';
+import { validateMessageAntiSpam } from '../services/spamFilterService';
 import { logger } from '../index';
 
 export const aiRouter = Router();
@@ -23,6 +25,53 @@ aiRouter.get('/status', (req: AuthRequest, res: Response) => {
     hasKey: !!key,
     model: process.env.GROK_MODEL || 'grok-2-latest',
   });
+});
+
+/**
+ * POST /api/ai/check-spam
+ * Avalia em tempo real se uma mensagem possui risco de banimento/spam
+ */
+aiRouter.post('/check-spam', (req: AuthRequest, res: Response) => {
+  try {
+    const { message } = req.body;
+    const analysis = validateMessageAntiSpam(typeof message === 'string' ? message : '');
+    return res.json(analysis);
+  } catch (err: any) {
+    logger.error({ err: err.message }, 'Erro ao avaliar spam da mensagem');
+    return res.status(500).json({ error: 'Erro ao avaliar spam: ' + err.message });
+  }
+});
+
+/**
+ * POST /api/ai/humanize-spam
+ * Reescreve e higieniza uma mensagem bloqueada por spam usando o Grok (xAI)
+ */
+aiRouter.post('/humanize-spam', async (req: AuthRequest, res: Response) => {
+  try {
+    const { message, apiKey: bodyKey } = req.body;
+
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({ error: 'Mensagem é obrigatória para humanizar.' });
+    }
+
+    const headerKey = req.headers['x-grok-api-key'] as string | undefined;
+    const apiKey = bodyKey || headerKey;
+
+    const result = await humanizeAndCleanSpamWithGrok(message.trim(), apiKey);
+    const newAnalysis = validateMessageAntiSpam(result.cleanMessage);
+
+    return res.json({
+      cleanMessage: result.cleanMessage,
+      improvements: result.improvements,
+      riskBefore: result.riskBefore,
+      riskAfter: newAnalysis.score,
+      isBlocked: newAnalysis.isBlocked,
+      usedAI: result.usedAI,
+    });
+  } catch (err: any) {
+    logger.error({ err: err.message }, 'Erro ao humanizar spam com Grok');
+    return res.status(500).json({ error: 'Erro ao humanizar mensagem: ' + err.message });
+  }
 });
 
 /**
@@ -88,3 +137,4 @@ aiRouter.post('/spintax', async (req: AuthRequest, res: Response) => {
     return res.status(500).json({ error: 'Erro ao gerar Spintax: ' + err.message });
   }
 });
+

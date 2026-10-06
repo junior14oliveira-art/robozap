@@ -11,6 +11,7 @@ import {
 } from '../queue/messageQueue';
 import { processTemplate, randomizeImageBuffer } from '../services/campaignService';
 import { normalizePhone } from '../services/spreadsheetService';
+import { validateMessageAntiSpam } from '../services/spamFilterService';
 import { getWASocket, isWhatsAppConnected, saveMessageToRetryStore } from '../whatsapp/client';
 import { requireAuth, AuthRequest } from '../middleware/auth';
 import { logger } from '../index';
@@ -332,6 +333,22 @@ campaignRouter.post('/', async (req: AuthRequest, res: Response) => {
 
     if (!name || !contacts || templatesToUse.length === 0) {
       return res.status(400).json({ error: 'Nome, contatos e pelo menos um modelo de mensagem são obrigatórios.' });
+    }
+
+    // 🛡️ TRAVA DE SEGURANÇA ANTI-SPAM ATIVA (Bloqueia mensagens perigosas que causam ban)
+    for (let i = 0; i < templatesToUse.length; i++) {
+      const tpl = templatesToUse[i];
+      const spamCheck = validateMessageAntiSpam(tpl);
+      if (spamCheck.isBlocked) {
+        const topViolations = spamCheck.violations
+          .map((v) => `• ${v.rule}: ${v.description}`)
+          .join('\n');
+        return res.status(400).json({
+          error: `🚫 BLOQUEIO DE SEGURANÇA ANTI-SPAM ATIVADO:\nO Modelo ${i + 1} contém termos com alto risco de banimento da Meta no WhatsApp.\n\n${topViolations}\n\n👉 Para liberar o disparo com segurança, clique em "Limpar com IA Grok" ou reescreva removendo termos agressivos e sirenes.`,
+          spamAnalysis: spamCheck,
+          blockedTemplateIndex: i,
+        });
+      }
     }
 
     if (!Array.isArray(contacts) || contacts.length === 0) {
@@ -700,6 +717,18 @@ campaignRouter.post('/test-send', async (req: AuthRequest, res: Response) => {
 
   if (!phone || !message) {
     return res.status(400).json({ error: 'Telefone e mensagem são obrigatórios para o teste.' });
+  }
+
+  // 🛡️ Validação Anti-Spam no Envio de Teste
+  const spamCheck = validateMessageAntiSpam(message);
+  if (spamCheck.isBlocked) {
+    const topViolations = spamCheck.violations
+      .map((v) => `• ${v.rule}: ${v.description}`)
+      .join('\n');
+    return res.status(400).json({
+      error: `🚫 Mensagem Bloqueada por Proteção Anti-Spam:\n\n${topViolations}\n\nO sistema impede o disparo deste texto para proteger seu número contra denúncias da Meta. Reescreva ou use a IA Grok para humanizar.`,
+      spamAnalysis: spamCheck,
+    });
   }
 
   if (!isWhatsAppConnected(userId)) {
